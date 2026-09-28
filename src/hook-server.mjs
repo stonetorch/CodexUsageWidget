@@ -1,0 +1,64 @@
+import http from "node:http";
+import { parseTranscriptFile } from "./transcript.mjs";
+
+function readJson(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > 1_000_000) {
+        reject(new Error("Hook payload is too large"));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function parseWithRetry(filePath, turnId) {
+  let lastResult = null;
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (attempt) await wait(250 * attempt);
+    try {
+      const result = parseTranscriptFile(filePath, turnId);
+      if (result) return result;
+      lastResult = result;
+    } catch {
+      // The transcript may still be flushing. Retry briefly.
+    }
+  }
+  return lastResult;
+}
+
+export function startHookServer({ port, store, logger = console }) {
+  const server = http.createServer(async (request, response) => {
+    if (request.method !== "POST" || request.url !== "/hook") {
+      response.writeHead(404).end();
+      return;
+    }
+    try {
+      const event = await readJson(request);
+      response.writeHead(202, { "content-type": "application/json" }).end("{}");
+      if (event.hook_event_name !== "Stop" || !event.transcript_path) return;
+      const metrics = await parseWithRetry(event.transcript_path, event.turn_id);
+      if (metrics) store.recordTurn(event, metrics);
+    } catch (error) {
+      logger.warn?.(`Hook event failed: ${error.message}`);
+      if (!response.headersSent) response.writeHead(400).end();
+    }
+  });
+  server.listen(port, "127.0.0.1");
+  return server;
+}
