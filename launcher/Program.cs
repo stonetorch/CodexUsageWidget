@@ -4,33 +4,24 @@ using System.Security.Cryptography;
 
 internal static class Program
 {
+    // Codex reviews a hook against its command path, so the runtime directory has to stay put: a
+    // directory named after the executable hash would make every rebuild look like a brand new
+    // hook and cost the user another trust prompt. Files are refreshed in place instead, and only
+    // when their content differs from the embedded copy.
+    private static readonly string RuntimeRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexUsageOverlay", "runtime");
+
+    // Small scripts are compared by hash so every edit lands; the bundled Node runtime is compared
+    // by size, because reading and hashing 80 MB on each start costs more than the copy it saves.
+    private const long HashLimit = 4 * 1024 * 1024;
+
     private static int Main(string[] args)
     {
         try
         {
-            var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Executable path is unavailable");
-            var digest = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(executable)))[..12].ToLowerInvariant();
-            var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexUsageOverlay", "runtime", digest);
-            Directory.CreateDirectory(root);
-            var assembly = Assembly.GetExecutingAssembly();
-            foreach (var name in assembly.GetManifestResourceNames())
-            {
-                string? relative = name switch
-                {
-                    "runtime.node.exe" => "node.exe",
-                    _ when name.StartsWith("src.", StringComparison.Ordinal) => Path.Combine("src", name[4..]),
-                    _ => null,
-                };
-                if (relative is null) continue;
-                var destination = Path.Combine(root, relative);
-                if (File.Exists(destination)) continue;
-                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-                var temporary = destination + "." + Environment.ProcessId + ".tmp";
-                using (var input = assembly.GetManifestResourceStream(name)!)
-                using (var output = File.Create(temporary)) input.CopyTo(output);
-                try { File.Move(temporary, destination); }
-                catch (IOException) when (File.Exists(destination)) { File.Delete(temporary); }
-            }
+            var root = RuntimeRoot;
+            Unpack(root);
+            DiscardSupersededRuntimes(root);
 
             if (args.Contains("--self-test"))
             {
@@ -85,5 +76,86 @@ internal static class Program
             catch { /* The launcher has no usable log directory. */ }
             return 1;
         }
+    }
+
+    private static void Unpack(string root)
+    {
+        Directory.CreateDirectory(root);
+        var assembly = Assembly.GetExecutingAssembly();
+        foreach (var name in assembly.GetManifestResourceNames())
+        {
+            string? relative = name switch
+            {
+                "runtime.node.exe" => "node.exe",
+                _ when name.StartsWith("src.", StringComparison.Ordinal) => Path.Combine("src", name[4..]),
+                _ => null,
+            };
+            if (relative is null) continue;
+            using var content = assembly.GetManifestResourceStream(name)!;
+            var destination = Path.Combine(root, relative);
+            if (IsCurrent(content, destination)) continue;
+            Replace(content, destination);
+        }
+    }
+
+    private static bool IsCurrent(Stream content, string destination)
+    {
+        var file = new FileInfo(destination);
+        if (!file.Exists || file.Length != content.Length) return false;
+        if (content.Length > HashLimit) return true;
+        content.Position = 0;
+        using var hash = SHA256.Create();
+        var embedded = hash.ComputeHash(content);
+        using var existing = File.OpenRead(destination);
+        return embedded.AsSpan().SequenceEqual(hash.ComputeHash(existing));
+    }
+
+    private static void Replace(Stream content, string destination)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        var temporary = destination + "." + Environment.ProcessId + ".tmp";
+        content.Position = 0;
+        using (var output = File.Create(temporary)) content.CopyTo(output);
+        try
+        {
+            File.Move(temporary, destination, overwrite: true);
+        }
+        catch (IOException)
+        {
+            // A widget that is already running keeps node.exe open; it uses its copy until it exits,
+            // and the next start picks up the new one.
+            File.Delete(temporary);
+        }
+    }
+
+    // Builds before this one unpacked into a directory named after their executable hash. Once the
+    // hook command points at the stable path nothing refers to those copies, so they only waste
+    // around 80 MB each. The node.exe check keeps this from touching anything else under runtime.
+    private static void DiscardSupersededRuntimes(string root)
+    {
+        foreach (var directory in Directory.EnumerateDirectories(root))
+        {
+            var name = Path.GetFileName(directory);
+            if (name.Length != 12 || !name.All(Uri.IsHexDigit)) continue;
+            if (!File.Exists(Path.Combine(directory, "node.exe"))) continue;
+            try
+            {
+                Directory.Delete(directory, true);
+            }
+            catch (Exception error)
+            {
+                Note($"Kept the superseded runtime {directory}: {error.Message}");
+            }
+        }
+    }
+
+    private static void Note(string message)
+    {
+        try
+        {
+            var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexUsageOverlay", "launcher.log");
+            File.AppendAllText(path, $"[{DateTimeOffset.Now:O}] {message}{Environment.NewLine}");
+        }
+        catch { /* The launcher has no usable log directory. */ }
     }
 }

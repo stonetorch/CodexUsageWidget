@@ -41,3 +41,5 @@ npm test
 Codex Desktop 以 MSIX 包分发，直接运行包内 `ChatGPT.exe` 得到的是没有程序包标识符的进程，应用会拒绝启动，启动器因此走应用模型激活；不要改回直接 `spawn` 可执行文件。
 
 两条激活路径，因为冷启动要传调试端口、唤出窗口不用：已在运行时用 `cmd /c start shell:AppsFolder\<AUMID>` 唤出，约 0.1 秒；需要带 `--remote-debugging-port` 冷启动时才编译 `IApplicationActivationManager` 互操作并调用，约 0.8 秒，但这段开销被应用自身的启动时间掩盖。查询包清单拿 AUMID 要接近 1 秒，所以结果缓存在 `%LOCALAPPDATA%\CodexUsageOverlay\aumid.txt`；包重装导致标识符变化时，激活失败会自动丢弃缓存重新查询。已运行时双击 EXE 到窗口前置约 1 秒，其中约 0.4 秒是 EXE 自身的 .NET 单文件启动。
+
+运行时目录固定为 `%LOCALAPPDATA%\CodexUsageOverlay\runtime`，不随构建改变。Codex 按 hook 命令的路径审核信任，如果每次重新构建都换目录，用户就要反复确认，Stop Hook 的命令因此始终是 `runtime\node.exe` 加 `runtime\src\hook-client.mjs`。启动器改为就地刷新文件：脚本按内容哈希比对，内置的 Node 运行时只按大小比对，因为每次启动都完整读取并哈希 80 MB 得不偿失；正在运行的实例占用 `node.exe` 时保留旧副本，下次启动再替换。更早的版本按可执行文件哈希命名目录，这些残留会在下次启动时清理。
