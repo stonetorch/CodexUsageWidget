@@ -9,7 +9,7 @@ test("session marker matches rendered Markdown text", () => {
 });
 
 test("replaces an older injected widget implementation on update", () => {
-  assert.match(updateSource({}), /__codexUsageOverlayV2\?\.version!==6/);
+  assert.match(updateSource({}), /__codexUsageOverlayV2\?\.version!==7/);
 });
 
 

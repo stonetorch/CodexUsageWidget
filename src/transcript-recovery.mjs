@@ -6,7 +6,7 @@ import { parseActiveTranscriptFile, parseCompletedTranscriptFile } from "./trans
 const MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const MAX_FILES = 200;
 
-function recentFiles(root, now) {
+function recentFiles(root, now, sessionIds = new Set()) {
   const directories = [root];
   const files = [];
   while (directories.length) {
@@ -20,14 +20,18 @@ function recentFiles(root, now) {
       } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
         try {
           const stat = fs.statSync(filePath);
-          if (stat.mtimeMs >= now - MAX_AGE_MS && stat.size > 0 && stat.size <= 64 * 1024 * 1024) {
-            files.push({ filePath, modified: stat.mtimeMs, size: stat.size });
+          const sessionId = [...sessionIds].find((id) => entry.name.endsWith(`-${id}.jsonl`));
+          if (stat.size > 0 && stat.mtimeMs >= now - MAX_AGE_MS
+            && (sessionId || stat.size <= 64 * 1024 * 1024)) {
+            files.push({ filePath, modified: stat.mtimeMs, size: stat.size, sessionId });
           }
         } catch { /* A transcript may be removed while scanning. */ }
       }
     }
   }
-  return files.sort((a, b) => b.modified - a.modified).slice(0, MAX_FILES);
+  const targeted = files.filter((file) => file.sessionId).sort((a, b) => b.modified - a.modified);
+  const recent = files.filter((file) => !file.sessionId).sort((a, b) => b.modified - a.modified).slice(0, MAX_FILES);
+  return [...targeted, ...recent];
 }
 
 export function recoverRecentTranscripts({
@@ -37,11 +41,13 @@ export function recoverRecentTranscripts({
   logger = console,
   seenFiles = null,
 }) {
-  const known = new Map(Object.values(store.snapshot().sessions || {})
+  const snapshot = store.snapshot();
+  const known = new Map(Object.values(snapshot.sessions || {})
     .flatMap((session) => (session.turns || []).map((turn) => [`${session.sessionId}:${turn.turnId}`, turn])));
+  const sessionIds = new Set([...Object.keys(snapshot.sessions || {}), ...Object.keys(snapshot.activeTurns || {})]);
   let added = 0;
   const activeSessions = new Set();
-  for (const { filePath, modified, size } of recentFiles(root, now)) {
+  for (const { filePath, modified, size } of recentFiles(root, now, sessionIds)) {
     const signature = `${modified}:${size}`;
     const seen = seenFiles?.get(filePath);
     if (seen?.signature === signature) {
@@ -49,6 +55,17 @@ export function recoverRecentTranscripts({
       continue;
     }
     try {
+      const active = parseActiveTranscriptFile(filePath);
+      if (active) {
+        activeSessions.add(active.sessionId);
+        store.setActiveTurn(active.sessionId, {
+          turnId: active.turnId, model: active.metrics.model, startedAt: active.metrics.startedAt,
+          usage: active.metrics.turnUsage, accountingVersion: 2,
+          lastUserMessage: active.metrics.lastUserMessage,
+          quotaObservations: active.metrics.quotaObservations || [],
+          updatedAt: new Date(modified).toISOString(), cwd: active.cwd,
+        });
+      }
       for (const record of parseCompletedTranscriptFile(filePath, 200)) {
         const key = `${record.sessionId}:${record.turnId}`;
         const previous = known.get(key);
@@ -62,17 +79,6 @@ export function recoverRecentTranscripts({
         known.set(key, { accountingVersion: 2, usage: metrics.turnUsage,
           quotaObservations: metrics.quotaObservations, completedAt: metrics.completedAt });
         added += 1;
-      }
-      const active = parseActiveTranscriptFile(filePath);
-      if (active) {
-        activeSessions.add(active.sessionId);
-        store.setActiveTurn(active.sessionId, {
-          turnId: active.turnId, model: active.metrics.model, startedAt: active.metrics.startedAt,
-          usage: active.metrics.turnUsage, accountingVersion: 2,
-          lastUserMessage: active.metrics.lastUserMessage,
-          quotaObservations: active.metrics.quotaObservations || [],
-          updatedAt: new Date(modified).toISOString(), cwd: active.cwd,
-        });
       }
       seenFiles?.set(filePath, { signature, activeSessionId: active?.sessionId || null });
     } catch (error) {

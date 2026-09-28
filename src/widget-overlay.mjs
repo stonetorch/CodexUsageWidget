@@ -42,7 +42,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText) {
     .metrics{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,Canvas)}.metric{display:flex;justify-content:space-between;gap:8px}.metric span{opacity:.7}.metric strong{font-variant-numeric:tabular-nums;text-align:right}
     .section-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.evidence{max-height:190px;overflow:auto;margin-top:6px}.evidence table{width:100%;border-collapse:collapse;font-size:10px;font-variant-numeric:tabular-nums}.evidence th,.evidence td{padding:3px 4px;border-bottom:1px solid color-mix(in srgb,CanvasText 10%,transparent);text-align:right}.evidence th:first-child,.evidence td:first-child{text-align:left;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.danger{margin-top:8px;border-color:#d55!important;color:#d55!important}
   </style><button class="widget" aria-expanded="false"><span id="five">5h --</span><span>·</span><span id="week">周 --</span><span>·</span><span class="last" id="last">上轮 --</span><span class="gear">⚙</span></button>
-  <section class="panel" hidden><h2>用量与设置</h2><p id="remaining"></p><p id="session"></p><p id="previous"></p>
+  <section class="panel" hidden><h2>用量与设置</h2><p id="remaining"></p><p id="session"></p><p id="previous"></p><p class="hint" id="runtime-status"></p>
   <fieldset><div class="tabs" role="tablist"><button id="scope-last" type="button" role="tab">上一轮</button><button id="scope-session" type="button" role="tab">当前会话</button></div><div class="metrics"><div class="metric"><span>总 token</span><strong id="metric-total">--</strong></div><div class="metric"><span>输出 token</span><strong id="metric-output">--</strong></div><div class="metric"><span>未缓存输入</span><strong id="metric-uncached">--</strong></div><div class="metric"><span>缓存输入</span><strong id="metric-cached">--</strong></div><div class="metric"><span>缓存写入</span><strong id="metric-write">--</strong></div><div class="metric"><span>缓存命中率</span><strong id="metric-hit">--</strong></div><div class="metric"><span>参考费用</span><strong id="metric-cost">--</strong></div><div class="metric"><span>模型</span><strong id="metric-model">--</strong></div></div><p class="hint" id="metric-note"></p></fieldset>
   <fieldset><div class="section-head"><strong>估算证据</strong><button class="small" id="evidence-toggle" type="button">查看详情</button></div><p id="confidence"></p><div class="evidence" id="evidence-details" hidden><table><thead><tr><th>模型</th><th>5h 组/权重</th><th>5h 系数</th><th>周 组/权重</th><th>周系数</th></tr></thead><tbody id="evidence-body"></tbody></table></div><button class="small danger" id="evidence-clear" type="button">清空用于估算的证据</button></fieldset>
   <fieldset><label><input id="sidebar" type="checkbox">侧栏显示剩余额度</label><label><input id="turns" type="checkbox">回复按钮旁显示本轮消耗</label></fieldset>
@@ -98,12 +98,15 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText) {
       if (!sessions.some((s)=>s.sessionId===id)) sessions.push({sessionId:id,turns:[],activeTurn,updatedAt:activeTurn.updatedAt});
     }
     sessions.sort((a,b)=>String(b.activeTurn?.updatedAt||b.updatedAt||"").localeCompare(String(a.activeTurn?.updatedAt||a.updatedAt||"")));
+    const selected=(session,method)=>{window.__CODEX_USAGE_WIDGET_SESSION__={sessionId:session?.sessionId||null,method,activeTurnId:session?.activeTurn?.turnId||null,activeTurnKeys:Object.keys(current.activeTurns||{})};return session;};
     const byUrl=sessions.find((s)=>s.sessionId && location.href.includes(s.sessionId));
-    if (byUrl) return byUrl;
+    if (byUrl) return selected(byUrl,"url");
     const body=compact(document.body?.innerText);
     const byActiveMessage=sessions.find((s)=>{const mark=messageMarker(s.activeTurn?.lastUserMessage);return mark.length>=16 && body.includes(mark);});
-    if (byActiveMessage) return byActiveMessage;
-    return sessions.find((s)=>{const latest=[...(s.turns||[])].reverse().find((t)=>t.lastAssistantMessage);const mark=messageMarker(latest?.lastAssistantMessage);return mark.length>=16 && body.includes(mark);}) || (sessions.length===1?sessions[0]:null);
+    if (byActiveMessage) return selected(byActiveMessage,"active-user-message");
+    const byCompletedMessage=sessions.find((s)=>{const latest=[...(s.turns||[])].reverse().find((t)=>t.lastAssistantMessage);const mark=messageMarker(latest?.lastAssistantMessage);return mark.length>=16 && body.includes(mark);});
+    if (byCompletedMessage) return selected(byCompletedMessage,"completed-assistant-message");
+    return selected(sessions.length===1?sessions[0]:null,sessions.length===1?"single-session":"unmatched");
   }
 
   function data() {
@@ -111,6 +114,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText) {
     const session=activeSession();
     const last=session?.turns?.at(-1);
     const active=session?.activeTurn;
+    $("runtime-status").textContent=`会话 ${session?.sessionId||"未匹配"} · ${active?`运行中 ${active.turnId}`:"未检测到运行轮次"} · 匹配方式 ${window.__CODEX_USAGE_WIDGET_SESSION__?.method||"未知"}`;
     $("five").textContent=`5h余 ${remaining(limits.primary)}`;
     $("week").textContent=`周余 ${remaining(limits.secondary)}`;
     $("last").textContent=active?`本轮 ${activePair(active.quotaEstimate)}`:`上轮 ${pair(last?.quotaEstimate)}`;
@@ -249,11 +253,11 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText) {
     try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"updateSettings",settings}));} catch { /* CDP reconnects */ }
     schedule();
   });
-  window.__codexUsageOverlayV2={version:6,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;}};
+  window.__codexUsageOverlayV2={version:7,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;delete window.__CODEX_USAGE_WIDGET_SESSION__;}};
   ensure();
 }
 
 const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()}),(${formatQuota.toString()})`;
 const serialize=(state)=>JSON.stringify(state).replaceAll("<","\\u003c");
 export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers})`;}
-export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==6)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}
+export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==7)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}

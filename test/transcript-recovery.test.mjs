@@ -72,3 +72,32 @@ test("recovery upgrades legacy records, backfills every completed turn, and is i
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("known session rollout is checked even when outside the newest 200 generic files", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cuo-known-session-test-"));
+  try {
+    const root = path.join(directory, "sessions"); fs.mkdirSync(root);
+    const store = new StateStore(path.join(directory, "state.json"));
+    store.recordTurn({ session_id: "known", turn_id: "previous" }, {
+      model: "gpt-6-sol", turnUsage: { total_tokens: 10 },
+      conversationUsage: { total_tokens: 10 }, completedAt: "2026-09-28T10:00:00Z",
+    });
+    const target = path.join(root, "rollout-known.jsonl");
+    fs.writeFileSync(target, [
+      { type: "session_meta", payload: { id: "known" } },
+      { type: "event_msg", payload: { type: "task_started", turn_id: "running" } },
+      { type: "turn_context", payload: { turn_id: "running", model: "gpt-6-sol" } },
+      { type: "token_usage_record", payload: { turn_id: "running", turn_token_usage: { total_tokens: 42 } } },
+    ].map(JSON.stringify).join("\n"));
+    const earlier = new Date(Date.now() - 60_000);
+    fs.utimesSync(target, earlier, earlier);
+    for (let index = 0; index < 205; index += 1) {
+      fs.writeFileSync(path.join(root, `other-${index}.jsonl`), "{}\n");
+    }
+    recoverRecentTranscripts({ root, store });
+    assert.equal(store.snapshot().activeTurns.known.turnId, "running");
+    assert.equal(store.snapshot().activeTurns.known.usage.total_tokens, 42);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
