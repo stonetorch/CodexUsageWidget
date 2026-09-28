@@ -2,12 +2,28 @@ import { toolbarPlacement, intersects } from "./placement.mjs";
 
 export function messageMarker(value) {
   return String(value || "")
+    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));/gi, (entity, hex, decimal) => {
+      const codePoint = parseInt(hex || decimal, hex ? 16 : 10);
+      return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
+    })
+    .replace(/&nbsp;/gi, " ")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/[`*_>#~|]/g, "")
+    .replace(/[`*>#~|]/g, "")
+    .replace(/(?<![\p{L}\p{N}])_|_(?![\p{L}\p{N}])/gu, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 72);
+}
+
+export function detectPageSessionId(doc, href) {
+  const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+  for (const name of ["data-above-composer-conversation-id", "data-response-annotation-conversation", "data-conversation-id", "data-thread-id", "data-session-id"]) {
+    const ids = [...new Set([...doc.querySelectorAll(`[${name}]`)].map((element) => element.getAttribute(name)).filter((value) => uuid.test(value || "")))];
+    if (ids.length === 1) return ids[0];
+  }
+  const named = String(href || "").match(/(?:session|conversation|thread)(?:[_-]?id)?[=/:]([0-9a-f-]{36})(?![0-9a-f-])/i);
+  return named && uuid.test(named[1]) ? named[1] : null;
 }
 
 export function formatQuota(estimate) {
@@ -19,7 +35,7 @@ export function formatQuota(estimate) {
   return `约 ${value >= 10 ? value.toFixed(1) : value >= 1 ? value.toFixed(2) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}%`;
 }
 
-function bootstrap(state, place, overlaps, makeMarker, quotaText) {
+function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId) {
   if (window.__codexUsageOverlayV2) { window.__codexUsageOverlayV2.update(state); return; }
   let current = state || {};
   let preferred = null;
@@ -101,7 +117,12 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText) {
       if (!sessions.some((s)=>s.sessionId===id)) sessions.push({sessionId:id,turns:[],activeTurn,updatedAt:activeTurn.updatedAt});
     }
     sessions.sort((a,b)=>String(b.activeTurn?.updatedAt||b.updatedAt||"").localeCompare(String(a.activeTurn?.updatedAt||a.updatedAt||"")));
-    const selected=(session,method)=>{window.__CODEX_USAGE_WIDGET_SESSION__={sessionId:session?.sessionId||null,method,activeTurnId:session?.activeTurn?.turnId||null,activeTurnKeys:Object.keys(current.activeTurns||{})};return session;};
+    const detectedSessionId=pageId(document,location.href);
+    const selected=(session,method)=>{window.__CODEX_USAGE_WIDGET_SESSION__={sessionId:session?.sessionId||null,detectedSessionId,method,activeTurnId:session?.activeTurn?.turnId||null,activeTurnKeys:Object.keys(current.activeTurns||{})};return session;};
+    if (detectedSessionId) {
+      const session=sessions.find((item)=>item.sessionId===detectedSessionId);
+      return selected(session||null,session?"page-id":"page-id-untracked");
+    }
     const byUrl=sessions.find((s)=>s.sessionId && location.href.includes(s.sessionId));
     if (byUrl) return selected(byUrl,"url");
     const body=compact(document.body?.innerText);
@@ -117,7 +138,8 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText) {
     const session=activeSession();
     const last=session?.turns?.at(-1);
     const active=session?.activeTurn;
-    $("runtime-status").textContent=`会话 ${session?.sessionId||"未匹配"} · ${active?`运行中 ${active.turnId}`:"未检测到运行轮次"} · 匹配方式 ${window.__CODEX_USAGE_WIDGET_SESSION__?.method||"未知"}`;
+    const sessionDebug=window.__CODEX_USAGE_WIDGET_SESSION__||{};
+    $("runtime-status").textContent=`页面 session_id：${sessionDebug.detectedSessionId||"未提取"} · state 会话：${sessionDebug.sessionId||"未匹配"} · ${active?`运行中 ${active.turnId}`:"未检测到运行轮次"} · 匹配方式 ${sessionDebug.method||"未知"}`;
     $("five").textContent=`5h余 ${remaining(limits.primary)}`;
     $("week").textContent=`周余 ${remaining(limits.secondary)}`;
     $("last").textContent=active?`本轮 ${activePair(active.quotaEstimate)}`:`上轮 ${pair(last?.quotaEstimate)}`;
@@ -257,11 +279,11 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText) {
     try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"updateSettings",settings}));} catch { /* CDP reconnects */ }
     schedule();
   });
-  window.__codexUsageOverlayV2={version:9,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;delete window.__CODEX_USAGE_WIDGET_SESSION__;}};
+  window.__codexUsageOverlayV2={version:12,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;delete window.__CODEX_USAGE_WIDGET_SESSION__;}};
   ensure();
 }
 
-const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()}),(${formatQuota.toString()})`;
+const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()}),(${formatQuota.toString()}),(${detectPageSessionId.toString()})`;
 const serialize=(state)=>JSON.stringify(state).replaceAll("<","\\u003c");
 export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers})`;}
-export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==9)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}
+export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==12)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}

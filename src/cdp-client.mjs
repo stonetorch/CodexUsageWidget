@@ -59,3 +59,7 @@ export async function listCdpTargets(port) {
   if (!response.ok) throw new Error(`CDP target list returned HTTP ${response.status}`);
   return (await response.json()).filter((target) => target.webSocketDebuggerUrl && ["page", "webview"].includes(target.type));
 }
+
+export function isCodexAppTarget(target) {
+  return target.type === "page" && String(target.url || "").startsWith("app://-/");
+}

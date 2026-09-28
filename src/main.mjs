@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { AppServerClient } from "./app-server-client.mjs";
-import { CdpClient, listCdpTargets } from "./cdp-client.mjs";
+import { CdpClient, isCodexAppTarget, listCdpTargets } from "./cdp-client.mjs";
 import { connectionPath, ensureAppDataDirectory, parseArgs } from "./config.mjs";
 import { launchChatGpt, isChatGptRunning } from "./desktop-launcher.mjs";
 import { updateSource } from "./widget-overlay.mjs";
@@ -45,11 +45,11 @@ try {
     await delay(250);
     try {
       targets = await listCdpTargets(options.debugPort);
-      if (targets.length) break;
+      if (targets.some(isCodexAppTarget)) break;
     } catch { /* wait for Electron */ }
   }
 }
-if (!targets?.length) throw new Error("Codex started, but no injectable renderer was exposed");
+if (!targets?.some(isCodexAppTarget)) throw new Error("Codex started, but no injectable renderer was exposed");
 if (appWasRunning) launchChatGpt();
 
 ensureAppDataDirectory();
@@ -82,17 +82,35 @@ await refreshLimits();
 const limitTimer = setInterval(refreshLimits, 60_000);
 
 const clients = new Map();
+const cleanedTargets = new Set();
+async function removeOverlay(target) {
+  const client = new CdpClient(target.webSocketDebuggerUrl);
+  try {
+    await client.connect();
+    await client.evaluate("window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlay?.destroy()");
+  } finally { client.close(); }
+}
 async function discoverAndInject() {
   let currentTargets = [];
   try { currentTargets = await listCdpTargets(options.debugPort); } catch { return; }
   const currentIds = new Set(currentTargets.map((target) => target.id));
+  for (const id of cleanedTargets) if (!currentIds.has(id)) cleanedTargets.delete(id);
   for (const [id, client] of clients) {
-    if (!currentIds.has(id)) {
+    const target = currentTargets.find((item) => item.id === id);
+    if (!target || !isCodexAppTarget(target)) {
+      if (target) try { await client.evaluate("window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlay?.destroy()"); } catch { /* Renderer may have navigated. */ }
       client.close();
       clients.delete(id);
     }
   }
   for (const target of currentTargets) {
+    if (!isCodexAppTarget(target)) {
+      if (!cleanedTargets.has(target.id)) {
+        try { await removeOverlay(target); cleanedTargets.add(target.id); } catch { /* Retry on next discovery. */ }
+      }
+      continue;
+    }
+    cleanedTargets.delete(target.id);
     if (clients.has(target.id)) continue;
     try {
       const client = new CdpClient(target.webSocketDebuggerUrl);
