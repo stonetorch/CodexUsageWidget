@@ -8,16 +8,10 @@ export const MODEL_WEIGHTS = Object.freeze({
   "gpt-5.3-codex": { input: 1.75, cached: 0.175, cacheWrite: 1.75, output: 14 },
 });
 
-const DEFAULT_BUDGETS = Object.freeze({ primary: 1, secondary: 5 });
 const WINDOWS = Object.freeze(["primary", "secondary"]);
-const DAY_MS = 24 * 60 * 60 * 1000;
-const HALF_LIFE_MS = 21 * DAY_MS;
-const GLOBAL_PRIOR_WEIGHT = 2;
-const MODEL_PRIOR_WEIGHT = 3;
-const MAX_OBSERVED_DELTA = 25;
-const NEARBY_TURN_MS = 2 * 60 * 1000;
-const MAX_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const HUBER_LOG_DISTANCE = Math.log(2.5);
+const HALF_LIFE_MS = 21 * 24 * 60 * 60 * 1000;
+const MAX_INTERVAL_MS = 30 * 60 * 1000;
+const MIN_OBSERVED_DELTA = 2;
 
 export function modelWeights(model) {
   const name = normalizeModel(model);
@@ -44,152 +38,151 @@ function timestamp(value) {
   return Number.isFinite(result) ? result : null;
 }
 
-function flattenTurns(sessions) {
-  return Object.entries(sessions || {}).flatMap(([sessionId, session]) => (session.turns || []).map((turn) => {
-    const startedAt = timestamp(turn.startedAt);
-    const completedAt = timestamp(turn.completedAt);
-    return {
-      turn,
-      sessionId,
-      model: normalizeModel(turn.model || session.model),
-      cost: Number(turn.weightedCost ?? weightedCost(turn.usage, turn.model || session.model)),
-      startedAt,
-      completedAt,
-      hasInterval: startedAt !== null && completedAt !== null && completedAt >= startedAt
-        && completedAt - startedAt <= MAX_INTERVAL_MS,
-    };
-  }));
+function unavailable(reason = "insufficient-evidence") {
+  return { percentPerCostUnit: null, source: "unavailable", confidence: "low",
+    samples: 0, effectiveSamples: 0, reason };
 }
 
-function intervalsOverlap(left, right) {
-  return left.startedAt <= right.completedAt && right.startedAt <= left.completedAt;
-}
-
-function observationQuality(item, turns) {
-  const others = turns.filter((candidate) => candidate.sessionId !== item.sessionId);
-  if (item.hasInterval) {
-    const overlaps = others.filter((candidate) => candidate.hasInterval && intervalsOverlap(item, candidate)).length;
-    if (overlaps) return 1 / (1 + 4 * overlaps);
-    return 1;
-  }
-
-  // Old recovered records lack source timestamps. They remain useful as weak evidence, while
-  // near-simultaneous completions from another session are treated as likely concurrency.
-  const nearby = item.completedAt !== null && others.some((candidate) => candidate.completedAt !== null
-    && Math.abs(candidate.completedAt - item.completedAt) <= NEARBY_TURN_MS);
-  return nearby ? 0.1 : 0.35;
-}
-
-function samplesFor(turns, window, now, resetAt) {
-  return turns.flatMap((item) => {
-    if (resetAt !== null && (item.completedAt === null || item.completedAt < resetAt)) return [];
-    const delta = Number(item.turn.rateLimitDelta?.[window]);
-    if (!Number.isFinite(delta) || delta <= 0 || delta > MAX_OBSERVED_DELTA || !(item.cost > 0)) return [];
-    const completedAt = item.completedAt ?? now;
-    const age = Math.max(0, now - completedAt);
-    const recency = Math.exp(-Math.log(2) * age / HALF_LIFE_MS);
-    const weight = observationQuality(item, turns) * recency;
-    if (!(weight > 0.001)) return [];
-    return [{ model: item.model, logRate: Math.log(delta / item.cost), weight, completedAt }];
-  });
-}
-
-function robustLogMean(samples, priorLog, priorWeight) {
-  let estimate = priorLog;
-  for (let pass = 0; pass < 4; pass += 1) {
-    let weightedTotal = priorLog * priorWeight;
-    let totalWeight = priorWeight;
-    for (const sample of samples) {
-      const distance = Math.abs(sample.logRate - estimate);
-      const robustWeight = distance > HUBER_LOG_DISTANCE ? HUBER_LOG_DISTANCE / distance : 1;
-      const weight = sample.weight * robustWeight;
-      weightedTotal += sample.logRate * weight;
-      totalWeight += weight;
-    }
-    estimate = weightedTotal / totalWeight;
-  }
-  return estimate;
-}
-
-function confidence(source, effectiveSamples) {
-  if (source === "rough") return "low";
-  if (source === "borrowed" || effectiveSamples < 2) return "medium";
-  return "high";
-}
-
-function coefficient(logRate, source, samples, effectiveSamples) {
-  return {
-    percentPerCostUnit: Math.exp(logRate),
-    source,
-    confidence: confidence(source, effectiveSamples),
-    samples,
-    effectiveSamples: Number(effectiveSamples.toFixed(2)),
-  };
+function overlap(a, b) {
+  return a.start < b.end && b.start < a.end;
 }
 
 /**
- * Build a time-decayed, robust hierarchical calibration.
- *
- * Each quota window gets an independent global estimate. A model estimate starts at that
- * global value and only moves away as model-specific evidence accumulates. This supplies a
- * weak cross-model prior for cold starts without forcing all models to share one conversion.
+ * Pool cost AND quota deltas, including zero deltas, within each model/reset bucket.
+ * Only use timestamped, same-turn account snapshots and discard known concurrent
+ * activity. No API-dollar budget or cross-model coefficient is assumed.
+ * Account snapshots are rounded and can lag; even accepted evidence is approximate.
  */
-export function quotaCalibration(sessions = {}, budgets = DEFAULT_BUDGETS, { now = Date.now(), resetAt = null } = {}) {
-  const turns = flattenTurns(sessions);
-  const result = { models: {} };
-  const models = new Set(turns.map((item) => item.model));
-  const resetTimestamp = timestamp(resetAt);
-
+export function quotaCalibration(sessions = {}, _budgets, { now = Date.now(), resetAt = null } = {}) {
+  const turns = Object.entries(sessions).flatMap(([sessionId, session]) => (session.turns || []).map((turn) => ({
+    turn, sessionId, model: normalizeModel(turn.model || session.model),
+    start: timestamp(turn.startedAt), end: timestamp(turn.completedAt),
+  })));
+  const reset = timestamp(resetAt);
+  const result = { models: {}, primary: unavailable(), secondary: unavailable() };
+  for (const model of new Set(turns.map((item) => item.model))) {
+    result.models[model] = { primary: unavailable(), secondary: unavailable() };
+  }
   for (const window of WINDOWS) {
-    const fallback = 100 / Math.max(0.01, Number(budgets?.[window] || DEFAULT_BUDGETS[window]));
-    const priorLog = Math.log(fallback);
-    const samples = samplesFor(turns, window, now, resetTimestamp);
-    const effectiveSamples = samples.reduce((sum, sample) => sum + sample.weight, 0);
-    const globalLog = robustLogMean(samples, priorLog, GLOBAL_PRIOR_WEIGHT);
-    result[window] = coefficient(
-      globalLog,
-      effectiveSamples >= 0.5 ? "calibrated" : "rough",
-      samples.length,
-      effectiveSamples,
-    );
-
-    for (const model of models) {
-      const ownSamples = samples.filter((sample) => sample.model === model);
-      const ownEffectiveSamples = ownSamples.reduce((sum, sample) => sum + sample.weight, 0);
-      const modelLog = robustLogMean(ownSamples, globalLog, MODEL_PRIOR_WEIGHT);
-      result.models[model] ||= {};
-      result.models[model][window] = coefficient(
-        modelLog,
-        ownEffectiveSamples >= 1.5 ? "calibrated" : effectiveSamples >= 0.5 ? "borrowed" : "rough",
-        ownSamples.length,
-        ownEffectiveSamples,
-      );
+    const groups = new Map();
+    const accepted = [];
+    for (const item of turns) {
+      if (item.turn.accountingVersion !== 2 || !modelWeights(item.model).known) continue;
+      for (const observation of item.turn.quotaObservations || []) {
+        const start = timestamp(observation.startedAt);
+        const end = timestamp(observation.completedAt);
+        if (start === null || end === null || end <= start || end - start > MAX_INTERVAL_MS
+          || item.start === null || item.end === null || start < item.start || end > item.end
+          || end > now || (reset !== null && start < reset)) continue;
+        const before = observation.before?.[window];
+        const after = observation.after?.[window];
+        const expectedMinutes = window === "primary" ? 300 : 10080;
+        if (observation.before?.limitId !== "codex" || observation.after?.limitId !== "codex"
+          || !before || !after || !Number.isFinite(before.resetsAt) || before.resetsAt <= 0
+          || before.resetsAt !== after.resetsAt || end > after.resetsAt * 1000
+          || before.windowDurationMins !== expectedMinutes || after.windowDurationMins !== expectedMinutes
+          || !Number.isFinite(before.usedPercent) || !Number.isFinite(after.usedPercent)
+          || before.usedPercent < 0 || after.usedPercent > 100 || after.usedPercent < before.usedPercent) continue;
+        const span = { start, end };
+        // Incomplete timestamps from other sessions cannot establish isolation.
+        const concurrent = turns.some((other) => {
+          if (other.sessionId === item.sessionId) return false;
+          if (other.end !== null && other.end <= start) return false;
+          if (other.start !== null && other.start >= end) return false;
+          return other.start === null || other.end === null || other.end < other.start || overlap(span, other);
+        });
+        if (concurrent) continue;
+        const cost = weightedCost(observation.usage, item.model);
+        if (!observation.usage || !Number.isFinite(cost) || cost < 0) continue;
+        accepted.push({ ...span, model: item.model, cost,
+          delta: after.usedPercent - before.usedPercent, reset: after.resetsAt });
+      }
     }
+    // Do not count duplicated/forked observation intervals more than once.
+    accepted.sort((a, b) => a.start - b.start || a.end - b.end);
+    let previousEnd = -Infinity;
+    for (const sample of accepted) {
+      if (sample.start < previousEnd) continue;
+      previousEnd = sample.end;
+      const key = `${sample.model}:${sample.reset}`;
+      const group = groups.get(key) || { model: sample.model, cost: 0, delta: 0, end: 0, intervals: 0 };
+      group.cost += sample.cost;
+      group.delta += sample.delta;
+      group.end = Math.max(group.end, sample.end);
+      group.intervals += 1;
+      groups.set(key, group);
+    }
+    for (const model of Object.keys(result.models)) {
+      const evidence = [...groups.values()].filter((group) => group.model === model);
+      let cost = 0, delta = 0, effectiveSamples = 0;
+      for (const group of evidence) {
+        const weight = Math.exp(-Math.log(2) * (now - group.end) / HALF_LIFE_MS);
+        cost += group.cost * weight;
+        delta += group.delta * weight;
+        effectiveSamples += weight;
+      }
+      const learned = { ...unavailable(), samples: evidence.length,
+        effectiveSamples: Number(effectiveSamples.toFixed(2)),
+        intervals: evidence.reduce((sum, group) => sum + group.intervals, 0) };
+      if (evidence.reduce((sum, group) => sum + group.delta, 0) >= MIN_OBSERVED_DELTA
+        && effectiveSamples >= 0.5 && delta >= 1 && cost > 0) {
+        learned.percentPerCostUnit = delta / cost;
+        learned.source = "calibrated";
+        learned.confidence = "medium";
+        learned.reason = null;
+      }
+      result.models[model][window] = learned;
+    }
+    // Global counts are informational; coefficients are never borrowed by another model.
+    result[window].samples = [...groups.values()].length;
+    result[window].effectiveSamples = Number(Object.values(result.models)
+      .reduce((sum, model) => sum + model[window].effectiveSamples, 0).toFixed(2));
   }
   return result;
 }
 
 function modelCoefficient(calibration, window, model) {
-  return calibration.models?.[normalizeModel(model)]?.[window] || {
-    ...calibration[window],
-    source: calibration[window]?.source === "calibrated" ? "borrowed" : "rough",
-    confidence: calibration[window]?.source === "calibrated" ? "medium" : "low",
-  };
+  return calibration.models?.[normalizeModel(model)]?.[window] || unavailable();
 }
 
 export function estimateTurnQuota(turn, calibration, fallbackModel = null) {
   if (!turn) return null;
   const model = turn.model || fallbackModel;
-  const cost = Number(turn.weightedCost ?? weightedCost(turn.usage, model));
+  const validUsage = turn.accountingVersion === 2 && turn.usage != null && modelWeights(model).known;
+  const cost = validUsage ? weightedCost(turn.usage, model) : null;
   return Object.fromEntries(WINDOWS.map((window) => {
     const learned = modelCoefficient(calibration, window, model);
+    const valid = cost !== null && Number.isFinite(cost) && learned.percentPerCostUnit !== null;
     return [window, {
-      percent: Math.max(0, cost * learned.percentPerCostUnit),
-      source: learned.source,
-      confidence: learned.confidence,
+      percent: valid ? cost * learned.percentPerCostUnit : null,
+      source: valid ? learned.source : "unavailable",
+      confidence: valid ? learned.confidence : "low",
+      reason: valid ? null : validUsage ? learned.reason : "unknown-usage-or-model",
       samples: learned.samples,
     }];
   }));
+}
+
+export function estimateActiveTurnQuota(turn, calibration, fallbackModel = null) {
+  const estimated = estimateTurnQuota(turn, calibration, fallbackModel);
+  if (!estimated) return null;
+  for (const window of WINDOWS) {
+    if (estimated[window].percent !== null) continue;
+    const observations = (turn.quotaObservations || []).filter((item) => {
+      const before = item.before?.[window], after = item.after?.[window];
+      return item.before?.limitId === "codex" && item.after?.limitId === "codex"
+        && before?.resetsAt > 0 && before.resetsAt === after?.resetsAt
+        && Number.isFinite(before.usedPercent) && Number.isFinite(after.usedPercent)
+        && after.usedPercent >= before.usedPercent;
+    });
+    if (!observations.length) continue;
+    const first = observations[0].before[window];
+    const last = observations.at(-1).after[window];
+    if (first.resetsAt !== last.resetsAt || last.usedPercent < first.usedPercent) continue;
+    estimated[window] = { percent: last.usedPercent - first.usedPercent,
+      source: "observed-lower-bound", confidence: "high", reason: null };
+  }
+  return estimated;
 }
 
 function normalizedUsage(usage = {}) {
@@ -235,25 +228,16 @@ export function usageSummary(usage = {}, model, referenceCost = null, approximat
 }
 
 function sessionUsageSummary(session) {
-  const empty = normalizedUsage();
-  const recordedUsage = (session.turns || []).reduce(
-    (sum, turn) => addUsage(sum, normalizedUsage(turn.usage)),
-    empty,
-  );
+  const turns = session.turns || [];
+  const verified = turns.filter((turn) => turn.accountingVersion === 2 && turn.usage != null);
+  const recordedUsage = verified.reduce((sum, turn) => addUsage(sum, normalizedUsage(turn.usage)), normalizedUsage());
   const conversationUsage = normalizedUsage(session.conversationUsage);
   const usage = conversationUsage.total_tokens >= recordedUsage.total_tokens ? conversationUsage : recordedUsage;
-  const recordedCost = (session.turns || []).reduce(
-    (sum, turn) => sum + Number(turn.weightedCost ?? weightedCost(turn.usage, turn.model || session.model)),
-    0,
-  );
-  const missingUsage = Object.fromEntries(Object.keys(usage).map((key) => [key, Math.max(0, usage[key] - recordedUsage[key])]));
-  const hasMissing = missingUsage.total_tokens > 0;
-  return usageSummary(
-    usage,
-    session.model,
-    recordedCost + weightedCost(missingUsage, session.model),
-    hasMissing,
-  );
+  const incomplete = verified.length !== turns.length || usage.total_tokens > recordedUsage.total_tokens;
+  const summary = usageSummary(usage, session.model, null, incomplete);
+  summary.referenceCost = incomplete || verified.some((turn) => !modelWeights(turn.model || session.model).known)
+    ? null : verified.reduce((sum, turn) => sum + weightedCost(turn.usage, turn.model || session.model), 0);
+  return summary;
 }
 
 export function estimateSessionQuota(session, calibration) {
@@ -261,19 +245,17 @@ export function estimateSessionQuota(session, calibration) {
   const turns = session.turns || [];
   const totalTokens = Number(session.conversationUsage?.total_tokens || 0);
   const recordedTokens = turns.reduce((sum, turn) => sum + Number(turn.usage?.total_tokens || 0), 0);
-  const missingTokens = Math.max(0, totalTokens - recordedTokens);
-  const missingCost = weightedCost({ input_tokens: missingTokens, cached_input_tokens: missingTokens * 0.8 }, session.model);
-
+  const incomplete = turns.length === 0 || totalTokens > recordedTokens
+    || turns.some((turn) => turn.accountingVersion !== 2 || turn.usage == null);
   return Object.fromEntries(WINDOWS.map((window) => {
-    const estimates = turns.map((turn) => estimateTurnQuota(turn, calibration, session.model)?.[window]).filter(Boolean);
-    const missingCoefficient = modelCoefficient(calibration, window, session.model);
-    const percent = estimates.reduce((sum, estimate) => sum + estimate.percent, 0)
-      + missingCost * missingCoefficient.percentPerCostUnit;
-    const sources = [...estimates.map((estimate) => estimate.source), missingCoefficient.source];
-    const source = missingTokens > 0 || sources.includes("rough")
-      ? "rough"
-      : sources.includes("borrowed") ? "borrowed" : "calibrated";
-    return [window, { percent: Math.max(0, percent), source }];
+    const estimates = turns.map((turn) => estimateTurnQuota(turn, calibration, session.model)[window]);
+    const missing = incomplete || estimates.some((estimate) => estimate.percent === null);
+    return [window, {
+      percent: missing ? null : estimates.reduce((sum, estimate) => sum + estimate.percent, 0),
+      source: missing ? "unavailable" : "calibrated",
+      reason: missing ? incomplete ? "incomplete-history" : "insufficient-evidence" : null,
+      scope: "conversation-lifetime",
+    }];
   }));
 }
 
@@ -283,14 +265,23 @@ export function usageView(state, options) {
     resetAt: state.settings?.calibrationResetAt,
     ...options,
   });
+  const activeTurns = Object.fromEntries(Object.entries(state.activeTurns || {}).map(([id, turn]) => [id, {
+    ...turn,
+    quotaEstimate: estimateActiveTurnQuota(turn, calibration, sessions[id]?.model),
+    usageSummary: turn.usage == null ? null : usageSummary(turn.usage, turn.model || sessions[id]?.model),
+  }]));
   return {
     ...state,
     calibration,
+    activeTurns,
     sessions: Object.fromEntries(Object.entries(sessions).map(([id, session]) => {
       const turns = (session.turns || []).map((turn) => ({
         ...turn,
         quotaEstimate: estimateTurnQuota(turn, calibration, session.model),
-        usageSummary: usageSummary(turn.usage, turn.model || session.model),
+        usageSummary: turn.accountingVersion === 2 && turn.usage != null
+          ? { ...usageSummary(turn.usage, turn.model || session.model),
+            referenceCost: modelWeights(turn.model || session.model).known ? weightedCost(turn.usage, turn.model || session.model) : null }
+          : null,
       }));
       return [id, {
         ...session,

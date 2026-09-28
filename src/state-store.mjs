@@ -8,17 +8,26 @@ export const DEFAULT_SETTINGS = Object.freeze({
   budgets: { primary: 1, secondary: 5 },
   calibrationResetAt: null,
 });
-const EMPTY_STATE = { version: 4, updatedAt: null, limits: null, sessions: {}, settings: DEFAULT_SETTINGS };
+const EMPTY_STATE = { version: 5, updatedAt: null, limits: null, sessions: {}, settings: DEFAULT_SETTINGS };
 
 export class StateStore extends EventTarget {
   constructor(filePath = statePath()) {
     super();
     this.filePath = filePath;
     this.state = this.#read();
+    this.activeTurns = new Map();
   }
 
   snapshot() {
-    return structuredClone(this.state);
+    return { ...structuredClone(this.state), activeTurns: Object.fromEntries(this.activeTurns) };
+  }
+
+  setActiveTurn(sessionId, turn) {
+    const previous = this.activeTurns.get(sessionId);
+    if (JSON.stringify(previous) === JSON.stringify(turn)) return;
+    if (turn) this.activeTurns.set(sessionId, turn);
+    else this.activeTurns.delete(sessionId);
+    this.dispatchEvent(new Event("changed"));
   }
 
   setLimits(limits) {
@@ -59,6 +68,7 @@ export class StateStore extends EventTarget {
     const sessionId = event.session_id || event.sessionId;
     const turnId = event.turn_id || event.turnId;
     if (!sessionId || !turnId || !metrics) return;
+    if (this.activeTurns.get(sessionId)?.turnId === turnId) this.activeTurns.delete(sessionId);
     const session = this.state.sessions[sessionId] || {
       sessionId,
       cwd: event.cwd || null,
@@ -68,19 +78,33 @@ export class StateStore extends EventTarget {
       updatedAt: null,
     };
     session.cwd = event.cwd || session.cwd;
-    session.model = event.model || metrics.model || session.model;
-    session.conversationUsage = metrics.conversationUsage;
+    const metricsAt = metrics.completedAt || null;
+    const accountingVersion = metrics.accountingVersion || 1;
+    const previousVersion = session.usageAccountingVersion || 1;
+    // Legacy completion times may be the recovery time, not the source time.
+    // A verified ledger replaces legacy totals even when its real timestamp is older.
+    if (accountingVersion > previousVersion || (accountingVersion === previousVersion
+      && (!session.usageUpdatedAt || (metricsAt && Date.parse(metricsAt) >= Date.parse(session.usageUpdatedAt))))) {
+      session.model = metrics.model || event.model || session.model;
+      session.conversationUsage = metrics.conversationUsage;
+      session.usageUpdatedAt = metricsAt;
+      session.usageAccountingVersion = accountingVersion;
+    }
     session.updatedAt = new Date().toISOString();
     const record = {
       turnId,
       startedAt: metrics.startedAt || null,
-      completedAt: metrics.completedAt || new Date().toISOString(),
+      completedAt: metricsAt,
+      accountingVersion,
+      usageSource: metrics.usageSource || "unknown",
       model: metrics.model || event.model || null,
       usage: metrics.turnUsage,
       rateLimitDelta: metrics.rateLimitDelta,
+      quotaObservations: metrics.quotaObservations || [],
       lastAssistantMessage: event.last_assistant_message || metrics.lastAssistantMessage || null,
     };
-    session.turns = [...session.turns.filter((turn) => turn.turnId !== turnId), record].slice(-200);
+    session.turns = [...session.turns.filter((turn) => turn.turnId !== turnId), record]
+      .sort((a, b) => String(a.completedAt || "").localeCompare(String(b.completedAt || ""))).slice(-200);
     this.state.sessions[sessionId] = session;
 
     const newest = Object.values(this.state.sessions)

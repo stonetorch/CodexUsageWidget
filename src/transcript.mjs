@@ -26,24 +26,13 @@ function normalizeLimits(limits) {
 
 function normalizeWindow(window) {
   if (!window) return null;
+  const usedPercent = window.used_percent ?? window.usedPercent;
+  if (usedPercent == null || !Number.isFinite(Number(usedPercent))) return null;
   return {
-    usedPercent: Number(window.used_percent ?? window.usedPercent ?? 0),
+    usedPercent: Number(usedPercent),
     windowDurationMins: Number(window.window_minutes ?? window.windowDurationMins ?? 0),
     resetsAt: Number(window.resets_at ?? window.resetsAt ?? 0),
   };
-}
-
-function subtractLimits(after, before) {
-  const result = {};
-  for (const key of ["primary", "secondary"]) {
-    if (!after?.[key] || !before?.[key]) {
-      result[key] = null;
-      continue;
-    }
-    result[key] = after[key].resetsAt && before[key].resetsAt && after[key].resetsAt !== before[key].resetsAt
-      ? null : Math.max(0, after[key].usedPercent - before[key].usedPercent);
-  }
-  return result;
 }
 
 function extractAssistantText(item) {
@@ -59,12 +48,18 @@ function extractAssistantText(item) {
   return null;
 }
 
+function extractUserText(item) {
+  if (item?.type !== "response_item" || item.payload?.type !== "message" || item.payload.role !== "user") return null;
+  return (item.payload.content || []).filter((part) => part?.type === "input_text" || part?.type === "text")
+    .map((part) => part.text || "").join("\n").trim() || null;
+}
+
 function entryTimestamp(entry) {
   const value = entry?.timestamp ?? entry?.payload?.timestamp;
   return Number.isFinite(Date.parse(value || "")) ? new Date(value).toISOString() : null;
 }
 
-export function parseTranscriptText(text, requestedTurnId = null) {
+function transcriptEntries(text) {
   const entries = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -75,6 +70,14 @@ export function parseTranscriptText(text, requestedTurnId = null) {
     }
   }
 
+  return entries;
+}
+
+export function parseTranscriptText(text, requestedTurnId = null) {
+  return parseTranscriptEntries(transcriptEntries(text), requestedTurnId);
+}
+
+function parseTranscriptEntries(entries, requestedTurnId = null) {
   let targetIndex = -1;
   let turnId = requestedTurnId;
   let model = null;
@@ -93,43 +96,92 @@ export function parseTranscriptText(text, requestedTurnId = null) {
   }
   if (targetIndex < 0) return null;
 
-  let baselineUsage = {};
-  let baselineLimits = null;
+  let baselineUsage = null;
   for (let index = targetIndex - 1; index >= 0; index -= 1) {
     const payload = entries[index]?.payload;
     if (entries[index]?.type === "event_msg" && payload?.type === "token_count" && payload.info) {
-      baselineUsage = payload.info.total_token_usage || {};
-      baselineLimits = normalizeLimits(payload.rate_limits);
-      break;
+      if (payload.info.total_token_usage) {
+        baselineUsage = payload.info.total_token_usage;
+        break;
+      }
     }
   }
 
   let finalUsage = null;
+  let previousUsage = baselineUsage;
+  let counterReset = false;
+  let explicitTurnUsage = null;
+  let threadUsage = null;
   let finalLimits = null;
+  let previousSnapshot = null;
+  const quotaObservations = [];
   let lastAssistantMessage = null;
+  let lastUserMessage = null;
   let completedAt = startedAt;
   for (let index = targetIndex + 1; index < entries.length; index += 1) {
     if (entries[index]?.type === "turn_context") break;
     completedAt = entryTimestamp(entries[index]) || completedAt;
     const payload = entries[index]?.payload;
+    if (entries[index]?.type === "token_usage_record" && payload?.turn_id === turnId) {
+      explicitTurnUsage = payload.turn_token_usage || explicitTurnUsage;
+      threadUsage = payload.thread_token_usage || threadUsage;
+    }
     if (entries[index]?.type === "event_msg" && payload?.type === "token_count" && payload.info) {
-      finalUsage = payload.info.total_token_usage || finalUsage;
-      finalLimits = normalizeLimits(payload.rate_limits) || finalLimits;
+      const nextUsage = payload.info.total_token_usage;
+      if (!nextUsage) continue;
+      if (previousUsage && TOKEN_FIELDS.some((field) => Number(nextUsage[field] || 0) < Number(previousUsage[field] || 0))) {
+        counterReset = true;
+        previousSnapshot = null;
+      }
+      finalUsage = nextUsage;
+      previousUsage = nextUsage;
+      const limits = normalizeLimits(payload.rate_limits);
+      // Only compare snapshots inside this turn. A previous turn's account snapshot
+      // includes unrelated spending during the idle gap. Keep quota buckets separate.
+      if (limits?.limitId === "codex" && finalUsage) {
+        finalLimits = limits;
+        const snapshot = { at: entryTimestamp(entries[index]), usage: finalUsage, limits };
+        if (previousSnapshot && snapshot.at && previousSnapshot.at
+          && Date.parse(snapshot.at) > Date.parse(previousSnapshot.at)
+          && TOKEN_FIELDS.every((field) => Number(finalUsage[field] || 0) >= Number(previousSnapshot.usage[field] || 0))) {
+          quotaObservations.push({
+            startedAt: previousSnapshot.at,
+            completedAt: snapshot.at,
+            usage: subtractUsage(finalUsage, previousSnapshot.usage),
+            before: previousSnapshot.limits,
+            after: limits,
+          });
+        }
+        previousSnapshot = snapshot;
+      }
     }
     lastAssistantMessage = extractAssistantText(entries[index]) || lastAssistantMessage;
+    lastUserMessage = extractUserText(entries[index]) || lastUserMessage;
+    if (entries[index]?.type === "event_msg" && payload?.type === "task_complete") break;
   }
-  if (!finalUsage) return null;
+  if (!finalUsage && !explicitTurnUsage) return null;
+  // Missing baseline is not zero: compacted/forked transcripts can start with a
+  // large inherited cumulative counter. Prefer the explicit per-turn ledger.
+  const monotonic = !counterReset && baselineUsage && finalUsage && TOKEN_FIELDS.every((field) =>
+    Number(finalUsage[field] || 0) >= Number(baselineUsage[field] || 0));
+  const turnUsage = explicitTurnUsage || (monotonic ? subtractUsage(finalUsage, baselineUsage) : null);
+  const conversationUsage = threadUsage || finalUsage || {};
 
   return {
     turnId,
     model,
     startedAt,
     completedAt,
-    turnUsage: subtractUsage(finalUsage, baselineUsage),
-    conversationUsage: Object.fromEntries(TOKEN_FIELDS.map((field) => [field, Number(finalUsage[field] || 0)])),
-    rateLimitDelta: subtractLimits(finalLimits, baselineLimits),
+    accountingVersion: 2,
+    usageSource: explicitTurnUsage ? "turn-ledger" : turnUsage ? "cumulative-difference" : "unknown",
+    turnUsage,
+    conversationUsage: Object.fromEntries(TOKEN_FIELDS.map((field) => [field, Number(conversationUsage[field] || 0)])),
+    // Retained for consumers of the old field; calibration uses interval evidence.
+    rateLimitDelta: { primary: null, secondary: null },
+    quotaObservations,
     rateLimits: finalLimits,
     lastAssistantMessage,
+    lastUserMessage,
   };
 }
 
@@ -138,28 +190,56 @@ export function parseTranscriptFile(filePath, turnId = null) {
 }
 
 export function parseLatestCompletedTranscriptFile(filePath) {
-  const text = fs.readFileSync(filePath, "utf8");
+  return parseCompletedTranscriptFile(filePath).at(-1) || null;
+}
+
+export function parseActiveTranscriptFile(filePath) {
+  const entries = transcriptEntries(fs.readFileSync(filePath, "utf8"));
+  let sessionId = null, cwd = null, turnId = null, completed = false, context = null;
+  for (const entry of entries) {
+    if (entry.type === "session_meta") {
+      sessionId = entry.payload?.id || sessionId;
+      cwd = entry.payload?.cwd || cwd;
+    } else if (entry.type === "event_msg" && entry.payload?.type === "task_started") {
+      turnId = entry.payload?.turn_id || turnId;
+      completed = false;
+    } else if (entry.type === "turn_context") {
+      turnId = entry.payload?.turn_id ?? entry.payload?.turnId ?? null;
+      context = entry;
+      completed = false;
+    } else if (entry.type === "event_msg" && entry.payload?.type === "task_complete") {
+      if (!entry.payload?.turn_id || entry.payload.turn_id === turnId) completed = true;
+    }
+  }
+  if (!sessionId || !turnId || completed) return null;
+  const metrics = parseTranscriptEntries(entries, turnId) || {
+    turnId, model: context?.payload?.model || null, startedAt: entryTimestamp(context),
+    accountingVersion: 2, turnUsage: null,
+    lastUserMessage: entries.slice(Math.max(0, entries.indexOf(context) + 1)).map(extractUserText).find(Boolean) || null,
+  };
+  return { sessionId, turnId, cwd, metrics };
+}
+
+export function parseCompletedTranscriptFile(filePath, limit = Infinity) {
+  const entries = transcriptEntries(fs.readFileSync(filePath, "utf8"));
   let sessionId = null;
   let cwd = null;
   let activeTurnId = null;
-  let completedTurnId = null;
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let entry;
-    try { entry = JSON.parse(line); } catch { continue; }
+  const completedTurnIds = new Set();
+  for (const entry of entries) {
     if (entry.type === "session_meta") {
       sessionId = entry.payload?.id || sessionId;
       cwd = entry.payload?.cwd || cwd;
     } else if (entry.type === "turn_context") {
       activeTurnId = entry.payload?.turn_id ?? entry.payload?.turnId ?? null;
     } else if (entry.type === "event_msg" && entry.payload?.type === "task_complete") {
-      completedTurnId = activeTurnId;
+      if (activeTurnId) completedTurnIds.add(activeTurnId);
     }
   }
-  if (!sessionId || !completedTurnId) return null;
-  const metrics = parseTranscriptText(text, completedTurnId);
-  if (!metrics || Number(metrics.turnUsage?.total_tokens || 0) <= 0) return null;
-  return { sessionId, turnId: completedTurnId, cwd, metrics };
+  if (!sessionId) return [];
+  return [...completedTurnIds].slice(-limit).map((turnId) => ({
+    sessionId, turnId, cwd, metrics: parseTranscriptEntries(entries, turnId),
+  })).filter((record) => record.metrics);
 }
 
 export function normalizeRateLimitsResult(result) {

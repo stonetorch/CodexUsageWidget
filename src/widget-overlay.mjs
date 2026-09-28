@@ -10,7 +10,13 @@ export function messageMarker(value) {
     .slice(0, 72);
 }
 
-function bootstrap(state, place, overlaps, makeMarker) {
+export function formatQuota(estimate) {
+  const value = estimate?.percent;
+  if (value == null || !Number.isFinite(value)) return "无法估算";
+  return `约 ${value >= 10 ? value.toFixed(1) : value >= 1 ? value.toFixed(2) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}%`;
+}
+
+function bootstrap(state, place, overlaps, makeMarker, quotaText) {
   if (window.__codexUsageOverlayV2) { window.__codexUsageOverlayV2.update(state); return; }
   let current = state || {};
   let preferred = null;
@@ -40,7 +46,7 @@ function bootstrap(state, place, overlaps, makeMarker) {
   <fieldset><div class="tabs" role="tablist"><button id="scope-last" type="button" role="tab">上一轮</button><button id="scope-session" type="button" role="tab">当前会话</button></div><div class="metrics"><div class="metric"><span>总 token</span><strong id="metric-total">--</strong></div><div class="metric"><span>输出 token</span><strong id="metric-output">--</strong></div><div class="metric"><span>未缓存输入</span><strong id="metric-uncached">--</strong></div><div class="metric"><span>缓存输入</span><strong id="metric-cached">--</strong></div><div class="metric"><span>缓存写入</span><strong id="metric-write">--</strong></div><div class="metric"><span>缓存命中率</span><strong id="metric-hit">--</strong></div><div class="metric"><span>参考费用</span><strong id="metric-cost">--</strong></div><div class="metric"><span>模型</span><strong id="metric-model">--</strong></div></div><p class="hint" id="metric-note"></p></fieldset>
   <fieldset><div class="section-head"><strong>估算证据</strong><button class="small" id="evidence-toggle" type="button">查看详情</button></div><p id="confidence"></p><div class="evidence" id="evidence-details" hidden><table><thead><tr><th>模型</th><th>5h 组/权重</th><th>5h 系数</th><th>周 组/权重</th><th>周系数</th></tr></thead><tbody id="evidence-body"></tbody></table></div><button class="small danger" id="evidence-clear" type="button">清空用于估算的证据</button></fieldset>
   <fieldset><label><input id="sidebar" type="checkbox">侧栏显示剩余额度</label><label><input id="turns" type="checkbox">回复按钮旁显示本轮消耗</label></fieldset>
-  <fieldset><p class="hint">无观测数据时的粗估预算（加权单位 / 整个窗口）</p><label>5 小时 <input id="budget-five" type="number" min="0.01" max="1000" step="0.01"></label><label>每周 <input id="budget-week" type="number" min="0.01" max="1000" step="0.01"></label></fieldset></section>`;
+  <p class="hint">没有足够的同模型观测证据时显示“无法估算”。会话累计值表示整个历史相当于完整额度窗口的比例，不代表当前窗口已用额度。</p></section>`;
   const side = document.createElement("span");
   side.id = "codex-usage-sidebar-widget";
   side.style.cssText = "position:fixed;z-index:900;pointer-events:none;display:block";
@@ -51,12 +57,14 @@ function bootstrap(state, place, overlaps, makeMarker) {
   const visible = (element) => element?.isConnected && rect(element).width > 0 && rect(element).height > 0 && getComputedStyle(element).visibility !== "hidden";
   const buttons = (element) => [...element.querySelectorAll("button,[role=button]")].filter(visible);
   const remaining = (value) => value ? `${Math.max(0,100-Number(value.usedPercent||0)).toFixed(0)}%` : "--";
-  const percent = (value) => { if (value == null) return "--"; const x = Number(value||0); return `${x>=10?x.toFixed(1):x>=1?x.toFixed(2):x.toFixed(3).replace(/0+$/,'').replace(/\.$/,'')}%`; };
-  const pair = (estimate) => estimate ? `${percent(estimate.primary?.percent)} / ${percent(estimate.secondary?.percent)}` : "-- / --";
+  const pair = (estimate) => `${quotaText(estimate?.primary)} / ${quotaText(estimate?.secondary)}`;
+  const activeQuotaText = (estimate) => estimate?.source === "observed-lower-bound"
+    ? quotaText(estimate).replace(/^约 /,"至少 ") : quotaText(estimate);
+  const activePair = (estimate) => `${activeQuotaText(estimate?.primary)} / ${activeQuotaText(estimate?.secondary)}`;
   const integer = (value) => value!=null&&Number.isFinite(Number(value)) ? Math.round(Number(value)).toLocaleString() : "--";
   const money = (value) => {const x=Number(value);return value!=null&&Number.isFinite(x)?`$${x<.01?x.toFixed(4):x.toFixed(3)}`:"--";};
   const rate = (value) => value!=null&&Number.isFinite(Number(value)) ? `${(Number(value)*100).toFixed(1)}%` : "--";
-  const coefficient = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(2) : "--";
+  const coefficient = (value) => value != null && Number.isFinite(Number(value)) ? Number(value).toFixed(2) : "--";
   const messageMarker = makeMarker;
 
   function locateComposer() {
@@ -85,10 +93,16 @@ function bootstrap(state, place, overlaps, makeMarker) {
   }
 
   function activeSession() {
-    const sessions=Object.values(current.sessions||{}).sort((a,b)=>String(b.updatedAt||"").localeCompare(String(a.updatedAt||"")));
+    const sessions=Object.entries(current.sessions||{}).map(([id,s])=>({...s,activeTurn:current.activeTurns?.[id]}));
+    for (const [id,activeTurn] of Object.entries(current.activeTurns||{})) {
+      if (!sessions.some((s)=>s.sessionId===id)) sessions.push({sessionId:id,turns:[],activeTurn,updatedAt:activeTurn.updatedAt});
+    }
+    sessions.sort((a,b)=>String(b.activeTurn?.updatedAt||b.updatedAt||"").localeCompare(String(a.activeTurn?.updatedAt||a.updatedAt||"")));
     const byUrl=sessions.find((s)=>s.sessionId && location.href.includes(s.sessionId));
     if (byUrl) return byUrl;
     const body=compact(document.body?.innerText);
+    const byActiveMessage=sessions.find((s)=>{const mark=messageMarker(s.activeTurn?.lastUserMessage);return mark.length>=16 && body.includes(mark);});
+    if (byActiveMessage) return byActiveMessage;
     return sessions.find((s)=>{const latest=[...(s.turns||[])].reverse().find((t)=>t.lastAssistantMessage);const mark=messageMarker(latest?.lastAssistantMessage);return mark.length>=16 && body.includes(mark);}) || (sessions.length===1?sessions[0]:null);
   }
 
@@ -96,12 +110,13 @@ function bootstrap(state, place, overlaps, makeMarker) {
     const limits=current.limits||{};
     const session=activeSession();
     const last=session?.turns?.at(-1);
+    const active=session?.activeTurn;
     $("five").textContent=`5h余 ${remaining(limits.primary)}`;
     $("week").textContent=`周余 ${remaining(limits.secondary)}`;
-    $("last").textContent=`上轮≈${pair(last?.quotaEstimate)}`;
+    $("last").textContent=active?`本轮 ${activePair(active.quotaEstimate)}`:`上轮 ${pair(last?.quotaEstimate)}`;
     $("remaining").textContent=`剩余：5 小时 ${remaining(limits.primary)} · 每周 ${remaining(limits.secondary)}`;
-    $("session").textContent=`当前会话消耗：5 小时约 ${percent(session?.quotaEstimate?.primary?.percent)} · 每周约 ${percent(session?.quotaEstimate?.secondary?.percent)}`;
-    $("previous").textContent=`上一轮消耗：5 小时约 ${percent(last?.quotaEstimate?.primary?.percent)} · 每周约 ${percent(last?.quotaEstimate?.secondary?.percent)}`;
+    $("session").textContent=`会话历史累计（完整窗口等值）：5 小时 ${quotaText(session?.quotaEstimate?.primary)} · 每周 ${quotaText(session?.quotaEstimate?.secondary)}`;
+    $("previous").textContent=active?`本轮已消耗：5 小时 ${activeQuotaText(active.quotaEstimate?.primary)} · 每周 ${activeQuotaText(active.quotaEstimate?.secondary)}`:`上一轮消耗：5 小时 ${quotaText(last?.quotaEstimate?.primary)} · 每周 ${quotaText(last?.quotaEstimate?.secondary)}`;
     const selected=detailScope==="session"?session:last;
     const summary=selected?.usageSummary;
     $("scope-last").setAttribute("aria-selected",String(detailScope==="last"));
@@ -114,10 +129,10 @@ function bootstrap(state, place, overlaps, makeMarker) {
     $("metric-hit").textContent=rate(summary?.cacheHitRate);
     $("metric-cost").textContent=money(summary?.referenceCost);
     $("metric-model").textContent=summary?.model||"--";
-    $("metric-note").textContent=`参考费用按 API token 价格加权${summary?.approximate?"，其中缺失轮次按当前模型估算":""}；它用于相对估算，不是 ChatGPT 账单。`;
+    $("metric-note").textContent=`参考费用按 API token 价格加权${summary?.approximate?"，历史轮次不完整，参考费用和额度累计无法估算":""}；它用于相对估算，不是 ChatGPT 账单。`;
     const model=String(last?.model||session?.model||"unknown").toLowerCase();
     const modelCalibration=current.calibration?.models?.[model];
-    const evidenceText=(window,key)=>{const own=modelCalibration?.[key];return `${window}：全局 ${current.calibration?.[key]?.samples||0} 组（当前模型 ${own?.samples||0} 组，有效权重 ${Number(own?.effectiveSamples||0).toFixed(2)}）`;};
+    const evidenceText=(window,key)=>{const own=modelCalibration?.[key];return `${window}：全局 ${current.calibration?.[key]?.samples||0} 个模型/重置周期组（当前模型 ${own?.samples||0} 组，有效权重 ${Number(own?.effectiveSamples||0).toFixed(2)}）`;};
     $("confidence").textContent=`${evidenceText("5 小时","primary")}；${evidenceText("每周","secondary")}。${current.settings?.calibrationResetAt?`仅使用 ${new Date(current.settings.calibrationResetAt).toLocaleString()} 之后的数据。`:""}`;
     $("evidence-details").hidden=!evidenceOpen;
     $("evidence-toggle").textContent=evidenceOpen?"收起详情":"查看详情";
@@ -125,8 +140,6 @@ function bootstrap(state, place, overlaps, makeMarker) {
     $("evidence-body").replaceChildren(...rows.map(([name,value])=>{const row=document.createElement("tr");for(const text of [name,`${value.primary?.samples||0} / ${Number(value.primary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.primary?.percentPerCostUnit),`${value.secondary?.samples||0} / ${Number(value.secondary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.secondary?.percentPerCostUnit)]){const cell=document.createElement("td");cell.textContent=text;row.appendChild(cell);}return row;}));
     $("sidebar").checked=current.settings?.sidebar===true;
     $("turns").checked=current.settings?.turnBadges===true;
-    $("budget-five").value=String(current.settings?.budgets?.primary??1);
-    $("budget-week").value=String(current.settings?.budgets?.secondary??5);
     root.querySelector(".panel").hidden=!open;
     root.querySelector(".widget").setAttribute("aria-expanded",String(open));
     side.shadowRoot.querySelector(".badge").textContent=`5h余 ${remaining(limits.primary)} · 周余 ${remaining(limits.secondary)}`;
@@ -204,7 +217,7 @@ function bootstrap(state, place, overlaps, makeMarker) {
         .filter((r)=>r.top>=message.bottom-8&&r.top<=message.bottom+76&&r.left>=message.left-20&&r.right<=message.right+30).sort((a,b)=>a.left-b.left);
       if (!row.length) continue;
       const item=turnHost(turn);
-      item.shadowRoot.querySelector(".badge").textContent=`本轮≈${pair(turn.quotaEstimate)}`;item.hidden=false;
+      item.shadowRoot.querySelector(".badge").textContent=`本轮 ${pair(turn.quotaEstimate)}`;item.hidden=false;
       const box=rect(item),end=row.at(-1),left=end.right+8,top=end.top+(end.height-box.height)/2;
       const candidate={left,right:left+box.width,top,bottom:top+box.height};
       if (candidate.right>Math.min(innerWidth-8,message.right+30)||row.some((button)=>overlaps(candidate,button))) {item.hidden=true;continue;}
@@ -226,21 +239,21 @@ function bootstrap(state, place, overlaps, makeMarker) {
   $("scope-session").addEventListener("click",()=>{detailScope="session";schedule();});
   $("evidence-toggle").addEventListener("click",()=>{evidenceOpen=!evidenceOpen;schedule();});
   $("evidence-clear").addEventListener("click",()=>{
-    if (!confirm("清空当前校准证据？会话和 token 记录仍会保留，之后的新轮次将重新拟合。")) return;
+    if (!confirm("清空当前校准证据？会话和 token 记录仍会保留，之后的有效观测区间将重新校准。")) return;
     try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"clearCalibrationEvidence"}));} catch { /* CDP reconnects */ }
   });
   root.addEventListener("change",(event)=>{
     if (!event.target.matches("input")) return;
-    const settings={sidebar:$("sidebar").checked,turnBadges:$("turns").checked,budgets:{primary:Number($("budget-five").value),secondary:Number($("budget-week").value)}};
+    const settings={sidebar:$("sidebar").checked,turnBadges:$("turns").checked};
     current.settings={...current.settings,...settings};
     try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"updateSettings",settings}));} catch { /* CDP reconnects */ }
     schedule();
   });
-  window.__codexUsageOverlayV2={version:4,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;}};
+  window.__codexUsageOverlayV2={version:6,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;}};
   ensure();
 }
 
-const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()})`;
+const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()}),(${formatQuota.toString()})`;
 const serialize=(state)=>JSON.stringify(state).replaceAll("<","\\u003c");
 export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers})`;}
-export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==4)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}
+export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==6)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}

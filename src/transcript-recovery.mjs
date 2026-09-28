@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseLatestCompletedTranscriptFile } from "./transcript.mjs";
+import { parseActiveTranscriptFile, parseCompletedTranscriptFile } from "./transcript.mjs";
 
 const MAX_AGE_MS = 48 * 60 * 60 * 1000;
 const MAX_FILES = 200;
@@ -37,24 +37,50 @@ export function recoverRecentTranscripts({
   logger = console,
   seenFiles = null,
 }) {
-  const known = new Set(Object.values(store.snapshot().sessions || {})
-    .flatMap((session) => (session.turns || []).map((turn) => `${session.sessionId}:${turn.turnId}`)));
+  const known = new Map(Object.values(store.snapshot().sessions || {})
+    .flatMap((session) => (session.turns || []).map((turn) => [`${session.sessionId}:${turn.turnId}`, turn])));
   let added = 0;
+  const activeSessions = new Set();
   for (const { filePath, modified, size } of recentFiles(root, now)) {
     const signature = `${modified}:${size}`;
-    if (seenFiles?.get(filePath) === signature) continue;
+    const seen = seenFiles?.get(filePath);
+    if (seen?.signature === signature) {
+      if (seen.activeSessionId) activeSessions.add(seen.activeSessionId);
+      continue;
+    }
     try {
-      const record = parseLatestCompletedTranscriptFile(filePath);
-      seenFiles?.set(filePath, signature);
-      if (!record) continue;
-      const key = `${record.sessionId}:${record.turnId}`;
-      if (known.has(key)) continue;
-      store.recordTurn({ session_id: record.sessionId, turn_id: record.turnId, cwd: record.cwd }, record.metrics);
-      known.add(key);
-      added += 1;
+      for (const record of parseCompletedTranscriptFile(filePath, 200)) {
+        const key = `${record.sessionId}:${record.turnId}`;
+        const previous = known.get(key);
+        const metrics = record.metrics;
+        // Upgrade legacy estimates, and refresh a completed turn whose ledger flushed later.
+        if (previous?.accountingVersion === 2
+          && JSON.stringify(previous.usage) === JSON.stringify(metrics.turnUsage)
+          && JSON.stringify(previous.quotaObservations) === JSON.stringify(metrics.quotaObservations)
+          && previous.completedAt === metrics.completedAt) continue;
+        store.recordTurn({ session_id: record.sessionId, turn_id: record.turnId, cwd: record.cwd }, metrics);
+        known.set(key, { accountingVersion: 2, usage: metrics.turnUsage,
+          quotaObservations: metrics.quotaObservations, completedAt: metrics.completedAt });
+        added += 1;
+      }
+      const active = parseActiveTranscriptFile(filePath);
+      if (active) {
+        activeSessions.add(active.sessionId);
+        store.setActiveTurn(active.sessionId, {
+          turnId: active.turnId, model: active.metrics.model, startedAt: active.metrics.startedAt,
+          usage: active.metrics.turnUsage, accountingVersion: 2,
+          lastUserMessage: active.metrics.lastUserMessage,
+          quotaObservations: active.metrics.quotaObservations || [],
+          updatedAt: new Date(modified).toISOString(), cwd: active.cwd,
+        });
+      }
+      seenFiles?.set(filePath, { signature, activeSessionId: active?.sessionId || null });
     } catch (error) {
       logger.warn?.(`Could not recover a completed transcript: ${error.code || error.name || "unknown error"}`);
     }
+  }
+  for (const sessionId of Object.keys(store.snapshot().activeTurns || {})) {
+    if (!activeSessions.has(sessionId)) store.setActiveTurn(sessionId, null);
   }
   return added;
 }

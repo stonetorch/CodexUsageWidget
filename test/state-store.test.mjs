@@ -21,6 +21,16 @@ try {
   const reset = new StateStore(file).snapshot();
   assert.equal(reset.settings.calibrationResetAt, "2026-09-28T12:00:00.000Z");
   assert.deepEqual(reset.sessions, {});
+  const metrics = (completedAt, total) => ({ accountingVersion: 2, usageSource: 'turn-ledger',
+    model: 'gpt-6-sol', completedAt, turnUsage: { input_tokens: 100, total_tokens: 100 },
+    conversationUsage: { input_tokens: total, total_tokens: total }, quotaObservations: [] });
+  reopened.recordTurn({ session_id: 's', turn_id: 'new' }, metrics('2026-09-28T12:00:00Z', 200));
+  reopened.recordTurn({ session_id: 's', turn_id: 'old' }, metrics('2026-09-28T11:00:00Z', 100));
+  const session = reopened.snapshot().sessions.s;
+  assert.equal(session.conversationUsage.total_tokens, 200);
+  assert.deepEqual(session.turns.map(t => t.turnId), ['old', 'new']);
+  assert.equal(new StateStore(file).snapshot().sessions.s.turns[0].accountingVersion, 2);
+
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });
 }
