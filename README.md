@@ -38,4 +38,6 @@ npm test
 
 逐轮按钮旁标记必须找到对应回复文字和操作按钮行才会出现。当前版本没有在正在运行且未开启 CDP 的 Codex 进程中强行开启调试端口；这种情况下需要完整退出并由启动器重新启动。仓库内 mock 页面覆盖了基本、侧栏、逐轮、窄窗口场景。
 
-Codex Desktop 以 MSIX 包分发，直接运行包内 `ChatGPT.exe` 得到的是没有程序包标识符的进程，应用会拒绝启动。启动器因此通过 `IApplicationActivationManager` 激活 `OpenAI.Codex_2p2nqsd0c76g0!App`，调试端口参数由激活接口转交；不要改回直接 `spawn` 可执行文件。
+Codex Desktop 以 MSIX 包分发，直接运行包内 `ChatGPT.exe` 得到的是没有程序包标识符的进程，应用会拒绝启动，启动器因此走应用模型激活；不要改回直接 `spawn` 可执行文件。
+
+两条激活路径，因为冷启动要传调试端口、唤出窗口不用：已在运行时用 `cmd /c start shell:AppsFolder\<AUMID>` 唤出，约 0.1 秒；需要带 `--remote-debugging-port` 冷启动时才编译 `IApplicationActivationManager` 互操作并调用，约 0.8 秒，但这段开销被应用自身的启动时间掩盖。查询包清单拿 AUMID 要接近 1 秒，所以结果缓存在 `%LOCALAPPDATA%\CodexUsageOverlay\aumid.txt`；包重装导致标识符变化时，激活失败会自动丢弃缓存重新查询。已运行时双击 EXE 到窗口前置约 1 秒，其中约 0.4 秒是 EXE 自身的 .NET 单文件启动。

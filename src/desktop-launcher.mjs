@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { appDataDirectory, ensureAppDataDirectory } from "./config.mjs";
 
 const PACKAGE_NAME = "OpenAI.Codex";
 
@@ -75,11 +78,30 @@ function runPowerShell(body) {
   return lines.join("\n");
 }
 
-let cachedAumid = null;
+// Reading the package manifest costs about a second, and the identity only changes when the
+// package is reinstalled, so it is cached next to the rest of the widget state.
+function cachePath() {
+  return path.join(appDataDirectory(), "aumid.txt");
+}
+
+function readCachedAumid() {
+  try {
+    const value = fs.readFileSync(cachePath(), "utf8").trim();
+    return /^[^!\s]+![^!\s]+$/.test(value) ? value : null;
+  } catch { return null; }
+}
+
+function discoverChatGptAumid() {
+  const aumid = appUserModelId(JSON.parse(runPowerShell(DISCOVERY_SCRIPT)));
+  try {
+    ensureAppDataDirectory();
+    fs.writeFileSync(cachePath(), aumid);
+  } catch { /* A missing cache only costs time on the next run. */ }
+  return aumid;
+}
 
 export function findChatGptAumid() {
-  if (!cachedAumid) cachedAumid = appUserModelId(JSON.parse(runPowerShell(DISCOVERY_SCRIPT)));
-  return cachedAumid;
+  return readCachedAumid() ?? discoverChatGptAumid();
 }
 
 export function isChatGptRunning() {
@@ -90,9 +112,33 @@ export function isChatGptRunning() {
   return /ChatGPT\.exe/i.test(result.stdout || "");
 }
 
-export function launchChatGpt(debugPort = null) {
-  const aumid = findChatGptAumid();
-  const commandLine = activationArguments(debugPort);
+function activateChatGpt(aumid, commandLine) {
   const interop = `Add-Type -TypeDefinition @'\n${ACTIVATION_INTEROP}\n'@`;
   runPowerShell(`${interop}\n[AppActivation]::Activate('${aumid}', '${commandLine}') | Out-Null`);
+}
+
+// Asking the shell to open the app's activation id raises the window of an instance that is
+// already running, in about a tenth of the time the activation manager needs. It cannot pass a
+// command line, which is why starting a cold instance still goes through the activation manager.
+function raiseChatGptWindow(aumid) {
+  try {
+    const result = spawnSync("cmd.exe", ["/c", "start", "", `shell:AppsFolder\\${aumid}`], {
+      windowsHide: true,
+      timeout: 15_000,
+    });
+    return result.status === 0;
+  } catch { return false; }
+}
+
+export function launchChatGpt(debugPort = null) {
+  const attempt = (aumid) => {
+    if (debugPort == null && raiseChatGptWindow(aumid)) return;
+    activateChatGpt(aumid, activationArguments(debugPort));
+  };
+  const cached = readCachedAumid();
+  if (cached) {
+    try { attempt(cached); return; }
+    catch { fs.rmSync(cachePath(), { force: true }); } // A cached id goes stale when the package is reinstalled.
+  }
+  attempt(discoverChatGptAumid());
 }
