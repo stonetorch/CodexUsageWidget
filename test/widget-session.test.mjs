@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { messageMarker, detectPageSessionId, updateSource, formatQuota } from "../src/widget-overlay.mjs";
+import { messageMarker, detectPageSessionId, updateSource, formatQuota, WIDGET_DISPLAY_VERSION, WIDGET_IMPLEMENTATION_VERSION } from "../src/widget-overlay.mjs";
 import { isCodexAppTarget } from "../src/cdp-client.mjs";
 
 test("session marker matches rendered Markdown text", () => {
@@ -10,7 +10,14 @@ test("session marker matches rendered Markdown text", () => {
 });
 
 test("replaces an older injected widget implementation on update", () => {
-  assert.match(updateSource({}), /__codexUsageOverlayV2\?\.version!==12/);
+  assert.match(updateSource({}), new RegExp(`__codexUsageOverlayV2\\?\\.version!==${WIDGET_IMPLEMENTATION_VERSION}`));
+});
+
+test("expanded settings show the current overlay version", () => {
+  const source = updateSource({});
+  assert.equal(WIDGET_DISPLAY_VERSION, `v${WIDGET_IMPLEMENTATION_VERSION}`);
+  assert.match(source, /浮窗版本/);
+  assert.match(source, new RegExp(WIDGET_DISPLAY_VERSION));
 });
 
 test("session marker preserves identifier underscores and decodes HTML spaces", () => {

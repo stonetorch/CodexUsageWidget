@@ -1,5 +1,10 @@
 import { toolbarPlacement, intersects } from "./placement.mjs";
 
+// Keep the user-facing version paired with the injected implementation version.
+// Bump both when a new overlay implementation is released.
+export const WIDGET_IMPLEMENTATION_VERSION = 12;
+export const WIDGET_DISPLAY_VERSION = `v${WIDGET_IMPLEMENTATION_VERSION}`;
+
 export function messageMarker(value) {
   return String(value || "")
     .replace(/&#(?:x([0-9a-f]+)|([0-9]+));/gi, (entity, hex, decimal) => {
@@ -35,7 +40,7 @@ export function formatQuota(estimate) {
   return `约 ${value >= 10 ? value.toFixed(1) : value >= 1 ? value.toFixed(2) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}%`;
 }
 
-function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId) {
+function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implementationVersion, displayVersion) {
   if (window.__codexUsageOverlayV2) { window.__codexUsageOverlayV2.update(state); return; }
   let current = state || {};
   let preferred = null;
@@ -65,7 +70,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId) {
   <fieldset><div class="tabs" role="tablist"><button id="scope-last" type="button" role="tab">上一轮</button><button id="scope-session" type="button" role="tab">当前会话</button></div><div class="metrics"><div class="metric"><span>总 token</span><strong id="metric-total">--</strong></div><div class="metric"><span>输出 token</span><strong id="metric-output">--</strong></div><div class="metric"><span>未缓存输入</span><strong id="metric-uncached">--</strong></div><div class="metric"><span>缓存输入</span><strong id="metric-cached">--</strong></div><div class="metric"><span>缓存写入</span><strong id="metric-write">--</strong></div><div class="metric"><span>缓存命中率</span><strong id="metric-hit">--</strong></div><div class="metric"><span>参考费用</span><strong id="metric-cost">--</strong></div><div class="metric"><span>模型</span><strong id="metric-model">--</strong></div></div><p class="hint" id="metric-note"></p></fieldset>
   <fieldset><div class="section-head"><strong>估算证据</strong><button class="small" id="evidence-toggle" type="button">查看详情</button></div><p id="confidence"></p><div class="evidence" id="evidence-details" hidden><table><thead><tr><th>模型</th><th>5h 组/权重</th><th>5h 系数</th><th>周 组/权重</th><th>周系数</th></tr></thead><tbody id="evidence-body"></tbody></table></div><button class="small danger" id="evidence-clear" type="button">清空用于估算的证据</button></fieldset>
   <fieldset><label><input id="sidebar" type="checkbox">侧栏显示剩余额度</label><label><input id="turns" type="checkbox">回复按钮旁显示本轮消耗</label></fieldset>
-  <p class="hint">会话累计值表示整个历史相当于完整额度窗口的比例，不代表当前窗口已用额度。</p></section>`;
+  <p class="hint">会话累计值表示整个历史相当于完整额度窗口的比例，不代表当前窗口已用额度。</p><p class="hint" id="widget-version"></p></section>`;
   const side = document.createElement("span");
   side.id = "codex-usage-sidebar-widget";
   side.style.cssText = "position:fixed;z-index:900;pointer-events:none;display:block";
@@ -170,6 +175,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId) {
     $("evidence-body").replaceChildren(...rows.map(([name,value])=>{const row=document.createElement("tr");for(const text of [name,`${value.primary?.samples||0} / ${Number(value.primary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.primary?.percentPerCostUnit),`${value.secondary?.samples||0} / ${Number(value.secondary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.secondary?.percentPerCostUnit)]){const cell=document.createElement("td");cell.textContent=text;row.appendChild(cell);}return row;}));
     $("sidebar").checked=current.settings?.sidebar===true;
     $("turns").checked=current.settings?.turnBadges===true;
+    $("widget-version").textContent=`浮窗版本 ${displayVersion}`;
     root.querySelector(".panel").hidden=!open;
     root.querySelector(".widget").setAttribute("aria-expanded",String(open));
     side.shadowRoot.querySelector(".badge").textContent=`5h余 ${remaining(limits.primary)} · 周余 ${remaining(limits.secondary)}`;
@@ -279,11 +285,11 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId) {
     try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"updateSettings",settings}));} catch { /* CDP reconnects */ }
     schedule();
   });
-  window.__codexUsageOverlayV2={version:12,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;delete window.__CODEX_USAGE_WIDGET_SESSION__;}};
+  window.__codexUsageOverlayV2={version:implementationVersion,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;delete window.__CODEX_USAGE_WIDGET_SESSION__;}};
   ensure();
 }
 
 const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()}),(${formatQuota.toString()}),(${detectPageSessionId.toString()})`;
 const serialize=(state)=>JSON.stringify(state).replaceAll("<","\\u003c");
-export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers})`;}
-export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==12)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}
+export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers},${WIDGET_IMPLEMENTATION_VERSION},${JSON.stringify(WIDGET_DISPLAY_VERSION)})`;}
+export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==${WIDGET_IMPLEMENTATION_VERSION})window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers},${WIDGET_IMPLEMENTATION_VERSION},${JSON.stringify(WIDGET_DISPLAY_VERSION)})`;}
