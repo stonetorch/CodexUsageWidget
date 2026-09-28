@@ -42,6 +42,28 @@ test("prices cached, uncached, cache-write, and output tokens separately", () =>
   assert.equal(summary.totalTokens, 120);
 });
 
+test("Terra has its own reference weights and can calibrate from observations", () => {
+  const usage = { input_tokens: 1_000_000, cached_input_tokens: 500_000,
+    cache_write_input_tokens: 100_000, output_tokens: 100_000 };
+  assert.equal(weightedCost(usage, "gpt-5.6-terra"), 2.35);
+  const t = turn({ model: "gpt-5.6-terra", input: 100_000, delta: 2 });
+  const c = calibration({ s: session([t], t.model) });
+  assert.equal(c.models[t.model].primary.source, "calibrated");
+  assert.equal(estimateTurnQuota(t, c).primary.percent, 2);
+});
+
+test("both Luna models use their own reference weights and calibration", () => {
+  const usage = { input_tokens: 1_000_000, cached_input_tokens: 500_000,
+    cache_write_input_tokens: 100_000, output_tokens: 100_000 };
+  for (const [model, expectedCost] of [["gpt-6-luna", 0.1075], ["gpt-5.6-luna", 0.235]]) {
+    assert.ok(Math.abs(weightedCost(usage, model) - expectedCost) < 1e-12);
+    const t = turn({ model, input: 100_000, delta: 2 });
+    const c = calibration({ s: session([t], model) });
+    assert.equal(c.models[model].primary.source, "calibrated");
+    assert.equal(estimateTurnQuota(t, c).primary.percent, 2);
+  }
+});
+
 test("no evidence or reset produces unavailable percentages regardless of legacy budgets", () => {
   const t = turn(); t.quotaObservations = [];
   const sessions = { s: session([t]) };
@@ -68,7 +90,7 @@ test("models learn only their own observed cost ratio, with no API budget or cro
   const b = turn({ model: 'gpt-6-luna', input: 100000, delta: 2 });
   const c = calibration({ a: session([a]), b: session([b], b.model) });
   assert.ok(Math.abs(c.models[a.model].primary.percentPerCostUnit - 40) < 1e-9);
-  assert.ok(Math.abs(c.models[b.model].primary.percentPerCostUnit - 400) < 1e-9);
+  assert.ok(Math.abs(c.models[b.model].primary.percentPerCostUnit - 200) < 1e-9);
   assert.equal(estimateTurnQuota(turn({ model: 'new-model' }), c).primary.percent, null);
   assert.equal(estimateTurnQuota(turn({ model: 'gpt-5.6-sol' }), c).primary.percent, null);
 });
@@ -153,7 +175,7 @@ test("valid mixed-model history sums individual estimates and may span multiple 
   const b = turn({ model: 'gpt-6-luna', input: 100000, delta: 2 });
   const v = usageView({ sessions: { s: session([a, b], b.model) } }, { now: NOW }).sessions.s;
   assert.ok(Math.abs(v.quotaEstimate.primary.percent - 6) < 1e-9);
-  assert.ok(Math.abs(v.usageSummary.referenceCost - 0.105) < 1e-9);
+  assert.ok(Math.abs(v.usageSummary.referenceCost - 0.11) < 1e-9);
 });
 
 

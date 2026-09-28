@@ -3,8 +3,10 @@
 export const MODEL_WEIGHTS = Object.freeze({
   "gpt-6-astra": { input: 5, cached: 0.5, cacheWrite: 6.25, output: 25 },
   "gpt-6-sol": { input: 1, cached: 0.1, cacheWrite: 1.25, output: 5 },
-  "gpt-6-luna": { input: 0.05, cached: 0.005, cacheWrite: 0.0625, output: 0.25 },
+  "gpt-6-luna": { input: 0.1, cached: 0.01, cacheWrite: 0.125, output: 0.5 },
   "gpt-5.6-sol": { input: 4, cached: 0.4, cacheWrite: 5, output: 20 },
+  "gpt-5.6-terra": { input: 2, cached: 0.2, cacheWrite: 2.5, output: 12 },
+  "gpt-5.6-luna": { input: 0.2, cached: 0.02, cacheWrite: 0.25, output: 1.2 },
   "gpt-5.3-codex": { input: 1.75, cached: 0.175, cacheWrite: 1.75, output: 14 },
 });
 
