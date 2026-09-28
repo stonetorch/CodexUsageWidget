@@ -48,6 +48,8 @@ internal static class Program
             foreach (var arg in args.Where(arg => arg != "--hook-client")) start.ArgumentList.Add(arg);
             start.RedirectStandardOutput = true;
             start.RedirectStandardError = true;
+            start.StandardOutputEncoding = System.Text.Encoding.UTF8;
+            start.StandardErrorEncoding = System.Text.Encoding.UTF8;
             start.RedirectStandardInput = hook;
             using var child = Process.Start(start) ?? throw new InvalidOperationException("Could not start bundled Node runtime");
             if (hook)
@@ -56,17 +58,19 @@ internal static class Program
                 child.StandardInput.Close();
                 Console.Out.Write(child.StandardOutput.ReadToEnd());
                 child.StandardError.ReadToEnd();
+                child.WaitForExit();
+                return child.ExitCode;
             }
-            else
-            {
-                var logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexUsageOverlay", "launcher.log");
-                using var log = new StreamWriter(logPath, append: true) { AutoFlush = true };
-                log.WriteLine($"[{DateTimeOffset.Now:O}] Started PID {child.Id}");
-                child.OutputDataReceived += (_, eventArgs) => { if (eventArgs.Data != null) lock (log) log.WriteLine(eventArgs.Data); };
-                child.ErrorDataReceived += (_, eventArgs) => { if (eventArgs.Data != null) lock (log) log.WriteLine(eventArgs.Data); };
-                child.BeginOutputReadLine();
-                child.BeginErrorReadLine();
-            }
+
+            // The writer has to stay alive until WaitForExit returns: the asynchronous readers keep
+            // raising events after the child exits, and writing to a disposed writer crashes the launcher.
+            var logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexUsageOverlay", "launcher.log");
+            using var log = new StreamWriter(logPath, append: true) { AutoFlush = true };
+            log.WriteLine($"[{DateTimeOffset.Now:O}] Started PID {child.Id}");
+            child.OutputDataReceived += (_, eventArgs) => { if (eventArgs.Data != null) lock (log) log.WriteLine(eventArgs.Data); };
+            child.ErrorDataReceived += (_, eventArgs) => { if (eventArgs.Data != null) lock (log) log.WriteLine(eventArgs.Data); };
+            child.BeginOutputReadLine();
+            child.BeginErrorReadLine();
             child.WaitForExit();
             return child.ExitCode;
         }
