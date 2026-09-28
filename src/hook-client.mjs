@@ -25,6 +25,9 @@ async function main() {
           headers: { "content-type": "application/json", "content-length": body.length },
         },
         (response) => {
+          if (response.statusCode !== 200) {
+            process.stderr.write(`Codex Usage Widget: Stop hook was not saved (HTTP ${response.statusCode}).\n`);
+          }
           response.resume();
           response.on("end", resolve);
         },

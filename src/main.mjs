@@ -8,6 +8,7 @@ import { ensureHookInstalled } from "./hook-installer.mjs";
 import { startHookServer } from "./hook-server.mjs";
 import { StateStore } from "./state-store.mjs";
 import { normalizeRateLimitsResult } from "./transcript.mjs";
+import { startTranscriptRecovery } from "./transcript-recovery.mjs";
 import { usageView } from "./quota-estimator.mjs";
 
 async function run() {
@@ -58,6 +59,7 @@ try {
 fs.writeFileSync(connectionPath(), JSON.stringify({ hookPort: options.hookPort, debugPort: options.debugPort }));
 
 const store = new StateStore();
+const stopRecovery = startTranscriptRecovery({ store });
 const hookServer = startHookServer({ port: options.hookPort, store });
 const appServer = new AppServerClient({ cwd: process.cwd() });
 await appServer.start();
@@ -131,6 +133,7 @@ const discoveryTimer = setInterval(discoverAndInject, 2000);
 
 console.log("Codex Usage Overlay is running. Keep this process open; press Ctrl+C to stop.");
 function shutdown() {
+  stopRecovery();
   clearInterval(limitTimer);
   clearInterval(discoveryTimer);
   for (const client of clients.values()) client.close();

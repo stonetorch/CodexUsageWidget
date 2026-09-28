@@ -19,7 +19,9 @@ Widget 位于输入栏底部按钮之间。点击它会显示设置面板，包�
 
 如果某轮的额度窗口实际变化可观测，程序会用这类样本分别校准两个窗口的“加权单位 → 百分比”比例；没有样本时使用设置面板中的粗估预算。百分比受服务端取整、异步更新、其它任务并发使用、模型改价和长上下文计价影响，始终显示“约”或“≈”。当前会话若有安装 Widget 之前的轮次，其成本只能用剩余 Token 和当前模型粗估。
 
-首次运行会自动向 `~/.codex/hooks.json` 添加本项目的 Stop Hook，并在修改前备份。Codex 可能要求在应用内信任 Hook；在信任之前，“上一轮消耗”没有新数据。卸载可以运行 `uninstall-hooks.ps1`，或从 `hooks.json` 删除指向 `CodexUsageOverlay\runtime` 的 Stop Hook。
+首次运行会自动向 `~/.codex/hooks.json` 添加本项目的 Stop Hook，并在修改前备份。Codex 可能要求在应用内信任 Hook；未信任时仍可通过下述转录补录取得数据，但更新会稍慢。卸载可以运行 `uninstall-hooks.ps1`，或从 `hooks.json` 删除指向 `CodexUsageOverlay\runtime` 的 Stop Hook。
+
+Widget 也会每 15 秒检查最近更新的本地会话记录，只补录已经完成且尚未登记的轮次。这样即使 Hook 被跳过或投递失败，“上一轮消耗”仍可在记录落盘后更新。后台 `GET /health` 会给出已保存轮次数和最近一次 Hook 错误类型；Hook 请求只有在成功写入后才返回成功。
 
 ## 从源码构建
 
@@ -30,7 +32,7 @@ npm test
 .\build-exe.ps1
 ```
 
-构建产物为单个 `dist/CodexUsageWidget.exe`。源码模式可运行 `start.ps1`。源码和打包模式都只监听本机回环地址；不要把 CDP 端口绑定到局域网。
+构建产物为单个 `dist/CodexUsageWidget.exe`。源码模式可运行 `start.ps1`。源码和打包模式都只监听本机回环地址；不要把 CDP 端口绑定到局域网。EXE 的图标是 `launcher/icon.ico`，取自已安装包里的 `app\resources\icon-chatgpt.ico`（同一目录下的 `chatgpt-app-*` 和 `chatgpt-tray-*` 是透明底的单色变体，只适合主题感知的场景，不适合给 EXE 用），由 csproj 的 `ApplicationIcon` 写入；官方换图标后重新复制即可。
 
 ## 实现与限制
 

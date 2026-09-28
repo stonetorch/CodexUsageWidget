@@ -43,9 +43,10 @@ async function parseWithRetry(filePath, turnId) {
 }
 
 export function startHookServer({ port, store, logger = console }) {
+  const diagnostics = { savedTurns: 0, lastError: null };
   const server = http.createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
-      response.writeHead(200, { "content-type": "application/json" }).end('{"running":true}');
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ running: true, ...diagnostics }));
       return;
     }
     if (request.method !== "POST" || request.url !== "/hook") {
@@ -54,13 +55,24 @@ export function startHookServer({ port, store, logger = console }) {
     }
     try {
       const event = await readJson(request);
-      response.writeHead(202, { "content-type": "application/json" }).end("{}");
-      if (event.hook_event_name !== "Stop" || !event.transcript_path) return;
+      if (event.hook_event_name !== "Stop" || !event.transcript_path || !event.session_id || !event.turn_id) {
+        response.writeHead(400, { "content-type": "application/json" }).end('{"saved":false,"error":"invalid-event"}');
+        return;
+      }
       const metrics = await parseWithRetry(event.transcript_path, event.turn_id);
-      if (metrics) store.recordTurn(event, metrics);
+      if (!metrics) {
+        diagnostics.lastError = "transcript-unavailable";
+        response.writeHead(422, { "content-type": "application/json" }).end('{"saved":false,"error":"transcript-unavailable"}');
+        return;
+      }
+      store.recordTurn(event, metrics);
+      diagnostics.savedTurns += 1;
+      diagnostics.lastError = null;
+      response.writeHead(200, { "content-type": "application/json" }).end('{"saved":true}');
     } catch (error) {
+      diagnostics.lastError = error?.code || error?.name || "hook-error";
       logger.warn?.(`Hook event failed: ${error.message}`);
-      if (!response.headersSent) response.writeHead(400).end();
+      if (!response.headersSent) response.writeHead(500, { "content-type": "application/json" }).end('{"saved":false,"error":"hook-error"}');
     }
   });
   server.listen(port, "127.0.0.1");

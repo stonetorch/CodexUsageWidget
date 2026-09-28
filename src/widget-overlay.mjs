@@ -1,6 +1,16 @@
 import { toolbarPlacement, intersects } from "./placement.mjs";
 
-function bootstrap(state, place, overlaps) {
+export function messageMarker(value) {
+  return String(value || "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/[`*_>#~|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 72);
+}
+
+function bootstrap(state, place, overlaps, makeMarker) {
   if (window.__codexUsageOverlayV2) { window.__codexUsageOverlayV2.update(state); return; }
   let current = state || {};
   let preferred = null;
@@ -36,7 +46,7 @@ function bootstrap(state, place, overlaps) {
   const remaining = (value) => value ? `${Math.max(0,100-Number(value.usedPercent||0)).toFixed(0)}%` : "--";
   const percent = (value) => { if (value == null) return "--"; const x = Number(value||0); return `${x>=10?x.toFixed(1):x>=1?x.toFixed(2):x.toFixed(3).replace(/0+$/,'').replace(/\.$/,'')}%`; };
   const pair = (estimate) => estimate ? `${percent(estimate.primary?.percent)} / ${percent(estimate.secondary?.percent)}` : "-- / --";
-  const messageMarker = (value) => compact(String(value||"").replace(/!\[[^\]]*\]\([^)]*\)/g," ").replace(/\[([^\]]+)\]\([^)]*\)/g,"$1").replace(/[`*_>#~|]/g," ")).slice(0,72);
+  const messageMarker = makeMarker;
 
   function locateComposer() {
     const explicit = ".composer-surface-chrome,[data-testid='composer'],[data-testid^='composer-'],[class*='ComposerLayoutRoot']";
@@ -188,11 +198,11 @@ function bootstrap(state, place, overlaps) {
     try {window.__codexUsageSaveSettings?.(JSON.stringify(settings));} catch { /* CDP reconnects */ }
     schedule();
   });
-  window.__codexUsageOverlayV2={update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;}};
+  window.__codexUsageOverlayV2={version:3,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;}};
   ensure();
 }
 
-const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()})`;
+const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()})`;
 const serialize=(state)=>JSON.stringify(state).replaceAll("<","\\u003c");
 export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers})`;}
-export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}
+export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==3)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}

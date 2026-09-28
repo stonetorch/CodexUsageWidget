@@ -126,6 +126,31 @@ export function parseTranscriptFile(filePath, turnId = null) {
   return parseTranscriptText(fs.readFileSync(filePath, "utf8"), turnId);
 }
 
+export function parseLatestCompletedTranscriptFile(filePath) {
+  const text = fs.readFileSync(filePath, "utf8");
+  let sessionId = null;
+  let cwd = null;
+  let activeTurnId = null;
+  let completedTurnId = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (entry.type === "session_meta") {
+      sessionId = entry.payload?.id || sessionId;
+      cwd = entry.payload?.cwd || cwd;
+    } else if (entry.type === "turn_context") {
+      activeTurnId = entry.payload?.turn_id ?? entry.payload?.turnId ?? null;
+    } else if (entry.type === "event_msg" && entry.payload?.type === "task_complete") {
+      completedTurnId = activeTurnId;
+    }
+  }
+  if (!sessionId || !completedTurnId) return null;
+  const metrics = parseTranscriptText(text, completedTurnId);
+  if (!metrics || Number(metrics.turnUsage?.total_tokens || 0) <= 0) return null;
+  return { sessionId, turnId: completedTurnId, cwd, metrics };
+}
+
 export function normalizeRateLimitsResult(result) {
   const limits = result?.rateLimitsByLimitId?.codex || result?.rateLimits || result;
   if (!limits) return null;

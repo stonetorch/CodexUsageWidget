@@ -25,7 +25,7 @@ internal static class Program
 
             if (args.Contains("--self-test"))
             {
-                var required = new[] { "main.mjs", "widget-overlay.mjs", "placement.mjs", "quota-estimator.mjs", "hook-client.mjs" };
+                var required = new[] { "main.mjs", "widget-overlay.mjs", "placement.mjs", "quota-estimator.mjs", "hook-client.mjs", "transcript-recovery.mjs" };
                 var okay = File.Exists(Path.Combine(root, "node.exe")) && required.All(file => File.Exists(Path.Combine(root, "src", file)));
                 File.WriteAllText(Path.Combine(root, "self-test.txt"), okay ? "ok" : "missing embedded files");
                 return okay ? 0 : 2;

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/main.mjs",
     "attach": "node src/main.mjs --attach",
-    "test": "node test/transcript.test.mjs && node test/placement.test.mjs && node test/quota-estimator.test.mjs && node test/hook-installer.test.mjs && node test/state-store.test.mjs && node test/desktop-launcher.test.mjs"
+    "test": "node test/transcript.test.mjs && node test/transcript-recovery.test.mjs && node test/widget-session.test.mjs && node test/placement.test.mjs && node test/quota-estimator.test.mjs && node test/hook-installer.test.mjs && node test/hook-server.test.mjs && node test/state-store.test.mjs && node test/desktop-launcher.test.mjs"
   },
   "engines": {
     "node": ">=22"
