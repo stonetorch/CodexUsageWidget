@@ -16,6 +16,8 @@ function bootstrap(state, place, overlaps, makeMarker) {
   let preferred = null;
   let watched = null;
   let open = false;
+  let detailScope = "last";
+  let evidenceOpen = false;
   let scheduled;
   const turnHosts = new Map();
   const host = document.createElement("span");
@@ -27,11 +29,16 @@ function bootstrap(state, place, overlaps, makeMarker) {
     button{cursor:pointer}.widget{display:flex;align-items:center;gap:5px;width:100%;height:28px;max-width:100%;padding:3px 8px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:999px;background:color-mix(in srgb,Canvas 86%,CanvasText 14%);color:CanvasText;font:500 11px/1.2 system-ui,'Segoe UI',sans-serif;white-space:nowrap;overflow:hidden;pointer-events:auto;box-shadow:0 2px 8px #0002}
     .widget span{overflow:hidden;text-overflow:ellipsis}.widget .gear{margin-left:auto}.widget:focus-visible{outline:2px solid #10a37f}
     :host([data-narrow=true]) .last{display:none}
-    .panel{position:absolute;bottom:calc(100% + 8px);left:var(--panel-left,0px);width:300px;max-width:calc(100vw - 16px);max-height:75vh;overflow:auto;padding:14px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 12px 32px #0005;font:12px/1.5 system-ui,'Segoe UI',sans-serif;pointer-events:auto}
+    .panel{position:absolute;bottom:calc(100% + 8px);left:var(--panel-left,0px);width:380px;max-width:calc(100vw - 16px);max-height:78vh;overflow:auto;padding:14px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 12px 32px #0005;font:12px/1.5 system-ui,'Segoe UI',sans-serif;pointer-events:auto}
     :host([data-panel-below=true]) .panel{top:calc(100% + 8px);bottom:auto}
-    .panel[hidden]{display:none}.panel h2{font-size:14px;margin:0 0 8px}.panel p{margin:6px 0}.panel fieldset{border:0;border-top:1px solid color-mix(in srgb,CanvasText 16%,transparent);padding:6px 0;margin:8px 0 0}.panel label{display:flex;align-items:center;gap:6px;margin:6px 0}.panel input[type=number]{width:65px;background:Canvas;color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 35%,transparent);border-radius:4px;padding:2px}.hint{opacity:.7}
+    .panel[hidden],[hidden]{display:none!important}.panel h2{font-size:14px;margin:0 0 8px}.panel p{margin:6px 0}.panel fieldset{border:0;border-top:1px solid color-mix(in srgb,CanvasText 16%,transparent);padding:8px 0 0;margin:10px 0 0}.panel label{display:flex;align-items:center;gap:6px;margin:6px 0}.panel input[type=number]{width:65px;background:Canvas;color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 35%,transparent);border-radius:4px;padding:2px}.hint{opacity:.7}
+    .tabs{display:flex;gap:4px;margin:7px 0}.tabs button,.small{border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:7px;background:transparent;color:CanvasText;padding:4px 8px;font:inherit}.tabs button[aria-selected=true]{background:color-mix(in srgb,CanvasText 14%,Canvas);font-weight:650}
+    .metrics{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,Canvas)}.metric{display:flex;justify-content:space-between;gap:8px}.metric span{opacity:.7}.metric strong{font-variant-numeric:tabular-nums;text-align:right}
+    .section-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.evidence{max-height:190px;overflow:auto;margin-top:6px}.evidence table{width:100%;border-collapse:collapse;font-size:10px;font-variant-numeric:tabular-nums}.evidence th,.evidence td{padding:3px 4px;border-bottom:1px solid color-mix(in srgb,CanvasText 10%,transparent);text-align:right}.evidence th:first-child,.evidence td:first-child{text-align:left;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.danger{margin-top:8px;border-color:#d55!important;color:#d55!important}
   </style><button class="widget" aria-expanded="false"><span id="five">5h --</span><span>·</span><span id="week">周 --</span><span>·</span><span class="last" id="last">上轮 --</span><span class="gear">⚙</span></button>
-  <section class="panel" hidden><h2>用量与设置</h2><p id="remaining"></p><p id="session"></p><p id="previous"></p><p class="hint" id="confidence"></p>
+  <section class="panel" hidden><h2>用量与设置</h2><p id="remaining"></p><p id="session"></p><p id="previous"></p>
+  <fieldset><div class="tabs" role="tablist"><button id="scope-last" type="button" role="tab">上一轮</button><button id="scope-session" type="button" role="tab">当前会话</button></div><div class="metrics"><div class="metric"><span>总 token</span><strong id="metric-total">--</strong></div><div class="metric"><span>输出 token</span><strong id="metric-output">--</strong></div><div class="metric"><span>未缓存输入</span><strong id="metric-uncached">--</strong></div><div class="metric"><span>缓存输入</span><strong id="metric-cached">--</strong></div><div class="metric"><span>缓存写入</span><strong id="metric-write">--</strong></div><div class="metric"><span>缓存命中率</span><strong id="metric-hit">--</strong></div><div class="metric"><span>参考费用</span><strong id="metric-cost">--</strong></div><div class="metric"><span>模型</span><strong id="metric-model">--</strong></div></div><p class="hint" id="metric-note"></p></fieldset>
+  <fieldset><div class="section-head"><strong>估算证据</strong><button class="small" id="evidence-toggle" type="button">查看详情</button></div><p id="confidence"></p><div class="evidence" id="evidence-details" hidden><table><thead><tr><th>模型</th><th>5h 组/权重</th><th>5h 系数</th><th>周 组/权重</th><th>周系数</th></tr></thead><tbody id="evidence-body"></tbody></table></div><button class="small danger" id="evidence-clear" type="button">清空用于估算的证据</button></fieldset>
   <fieldset><label><input id="sidebar" type="checkbox">侧栏显示剩余额度</label><label><input id="turns" type="checkbox">回复按钮旁显示本轮消耗</label></fieldset>
   <fieldset><p class="hint">无观测数据时的粗估预算（加权单位 / 整个窗口）</p><label>5 小时 <input id="budget-five" type="number" min="0.01" max="1000" step="0.01"></label><label>每周 <input id="budget-week" type="number" min="0.01" max="1000" step="0.01"></label></fieldset></section>`;
   const side = document.createElement("span");
@@ -46,6 +53,10 @@ function bootstrap(state, place, overlaps, makeMarker) {
   const remaining = (value) => value ? `${Math.max(0,100-Number(value.usedPercent||0)).toFixed(0)}%` : "--";
   const percent = (value) => { if (value == null) return "--"; const x = Number(value||0); return `${x>=10?x.toFixed(1):x>=1?x.toFixed(2):x.toFixed(3).replace(/0+$/,'').replace(/\.$/,'')}%`; };
   const pair = (estimate) => estimate ? `${percent(estimate.primary?.percent)} / ${percent(estimate.secondary?.percent)}` : "-- / --";
+  const integer = (value) => value!=null&&Number.isFinite(Number(value)) ? Math.round(Number(value)).toLocaleString() : "--";
+  const money = (value) => {const x=Number(value);return value!=null&&Number.isFinite(x)?`$${x<.01?x.toFixed(4):x.toFixed(3)}`:"--";};
+  const rate = (value) => value!=null&&Number.isFinite(Number(value)) ? `${(Number(value)*100).toFixed(1)}%` : "--";
+  const coefficient = (value) => Number.isFinite(Number(value)) ? Number(value).toFixed(2) : "--";
   const messageMarker = makeMarker;
 
   function locateComposer() {
@@ -91,8 +102,27 @@ function bootstrap(state, place, overlaps, makeMarker) {
     $("remaining").textContent=`剩余：5 小时 ${remaining(limits.primary)} · 每周 ${remaining(limits.secondary)}`;
     $("session").textContent=`当前会话消耗：5 小时约 ${percent(session?.quotaEstimate?.primary?.percent)} · 每周约 ${percent(session?.quotaEstimate?.secondary?.percent)}`;
     $("previous").textContent=`上一轮消耗：5 小时约 ${percent(last?.quotaEstimate?.primary?.percent)} · 每周约 ${percent(last?.quotaEstimate?.secondary?.percent)}`;
-    const calibrationText=(value)=>value?.source==="calibrated"?`动态校准 ${value.samples} 条样本`:"历史不足，使用跨模型先验";
-    $("confidence").textContent=`估算依据：5 小时 ${calibrationText(current.calibration?.primary)}；每周 ${calibrationText(current.calibration?.secondary)}。历史样本按时间衰减，并降低并发会话的权重。`;
+    const selected=detailScope==="session"?session:last;
+    const summary=selected?.usageSummary;
+    $("scope-last").setAttribute("aria-selected",String(detailScope==="last"));
+    $("scope-session").setAttribute("aria-selected",String(detailScope==="session"));
+    $("metric-total").textContent=integer(summary?.totalTokens);
+    $("metric-output").textContent=integer(summary?.outputTokens);
+    $("metric-uncached").textContent=integer(summary?.uncachedInputTokens);
+    $("metric-cached").textContent=integer(summary?.cachedInputTokens);
+    $("metric-write").textContent=integer(summary?.cacheWriteInputTokens);
+    $("metric-hit").textContent=rate(summary?.cacheHitRate);
+    $("metric-cost").textContent=money(summary?.referenceCost);
+    $("metric-model").textContent=summary?.model||"--";
+    $("metric-note").textContent=`参考费用按 API token 价格加权${summary?.approximate?"，其中缺失轮次按当前模型估算":""}；它用于相对估算，不是 ChatGPT 账单。`;
+    const model=String(last?.model||session?.model||"unknown").toLowerCase();
+    const modelCalibration=current.calibration?.models?.[model];
+    const evidenceText=(window,key)=>{const own=modelCalibration?.[key];return `${window}：全局 ${current.calibration?.[key]?.samples||0} 组（当前模型 ${own?.samples||0} 组，有效权重 ${Number(own?.effectiveSamples||0).toFixed(2)}）`;};
+    $("confidence").textContent=`${evidenceText("5 小时","primary")}；${evidenceText("每周","secondary")}。${current.settings?.calibrationResetAt?`仅使用 ${new Date(current.settings.calibrationResetAt).toLocaleString()} 之后的数据。`:""}`;
+    $("evidence-details").hidden=!evidenceOpen;
+    $("evidence-toggle").textContent=evidenceOpen?"收起详情":"查看详情";
+    const rows=Object.entries(current.calibration?.models||{}).sort((a,b)=>(b[1].primary?.effectiveSamples||0)-(a[1].primary?.effectiveSamples||0));
+    $("evidence-body").replaceChildren(...rows.map(([name,value])=>{const row=document.createElement("tr");for(const text of [name,`${value.primary?.samples||0} / ${Number(value.primary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.primary?.percentPerCostUnit),`${value.secondary?.samples||0} / ${Number(value.secondary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.secondary?.percentPerCostUnit)]){const cell=document.createElement("td");cell.textContent=text;row.appendChild(cell);}return row;}));
     $("sidebar").checked=current.settings?.sidebar===true;
     $("turns").checked=current.settings?.turnBadges===true;
     $("budget-five").value=String(current.settings?.budgets?.primary??1);
@@ -115,7 +145,7 @@ function bootstrap(state, place, overlaps, makeMarker) {
     host.style.top=`${Math.round(Math.max(8,Math.min(innerHeight-h-8,result.topCenter-h/2)))}px`;
     host.dataset.panelBelow=String(rect(host).top<Math.min(300,innerHeight*.75)+16);
     if (result.row.some((r)=>overlaps(rect(host),r))) {host.hidden=true;window.__CODEX_USAGE_WIDGET_DEBUG__={status:"degraded",reason:"control-collision"};return;}
-    const panelWidth=Math.min(300,innerWidth-16);
+    const panelWidth=Math.min(380,innerWidth-16);
     host.style.setProperty("--panel-left",`${Math.max(8-result.left,Math.min(0,innerWidth-8-result.left-panelWidth))}px`);
     window.__CODEX_USAGE_WIDGET_DEBUG__={status:"ready",composerStrategy:composer.strategy,availableWidth:result.maxWidth,compact:result.compact,lastPlacementAt:Date.now()};
   }
@@ -192,18 +222,25 @@ function bootstrap(state, place, overlaps, makeMarker) {
   const onPointer=(event)=>{if(open&&!event.composedPath().includes(host)){open=false;schedule();}};
   addEventListener("resize",schedule,{passive:true});document.addEventListener("scroll",onScroll,{capture:true,passive:true});document.addEventListener("visibilitychange",schedule);document.addEventListener("pointerdown",onPointer);
   root.querySelector(".widget").addEventListener("click",()=>{open=!open;schedule();});
+  $("scope-last").addEventListener("click",()=>{detailScope="last";schedule();});
+  $("scope-session").addEventListener("click",()=>{detailScope="session";schedule();});
+  $("evidence-toggle").addEventListener("click",()=>{evidenceOpen=!evidenceOpen;schedule();});
+  $("evidence-clear").addEventListener("click",()=>{
+    if (!confirm("清空当前校准证据？会话和 token 记录仍会保留，之后的新轮次将重新拟合。")) return;
+    try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"clearCalibrationEvidence"}));} catch { /* CDP reconnects */ }
+  });
   root.addEventListener("change",(event)=>{
     if (!event.target.matches("input")) return;
     const settings={sidebar:$("sidebar").checked,turnBadges:$("turns").checked,budgets:{primary:Number($("budget-five").value),secondary:Number($("budget-week").value)}};
-    current.settings=settings;
-    try {window.__codexUsageSaveSettings?.(JSON.stringify(settings));} catch { /* CDP reconnects */ }
+    current.settings={...current.settings,...settings};
+    try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"updateSettings",settings}));} catch { /* CDP reconnects */ }
     schedule();
   });
-  window.__codexUsageOverlayV2={version:3,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;}};
+  window.__codexUsageOverlayV2={version:4,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;}};
   ensure();
 }
 
 const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()})`;
 const serialize=(state)=>JSON.stringify(state).replaceAll("<","\\u003c");
 export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers})`;}
-export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==3)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}
+export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==4)window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers})`;}

@@ -6,8 +6,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   sidebar: false,
   turnBadges: false,
   budgets: { primary: 1, secondary: 5 },
+  calibrationResetAt: null,
 });
-const EMPTY_STATE = { version: 3, updatedAt: null, limits: null, sessions: {}, settings: DEFAULT_SETTINGS };
+const EMPTY_STATE = { version: 4, updatedAt: null, limits: null, sessions: {}, settings: DEFAULT_SETTINGS };
 
 export class StateStore extends EventTarget {
   constructor(filePath = statePath()) {
@@ -34,10 +35,22 @@ export class StateStore extends EventTarget {
     this.state.settings = {
       sidebar: input.sidebar === true,
       turnBadges: input.turnBadges === true,
+      calibrationResetAt: settings.calibrationResetAt || null,
       budgets: {
         primary: positive(budgets.primary, settings.budgets?.primary ?? DEFAULT_SETTINGS.budgets.primary),
         secondary: positive(budgets.secondary, settings.budgets?.secondary ?? DEFAULT_SETTINGS.budgets.secondary),
       },
+    };
+    this.#commit();
+  }
+
+  clearCalibrationEvidence(at = new Date().toISOString()) {
+    const parsed = Date.parse(at);
+    if (!Number.isFinite(parsed)) return;
+    this.state.settings = {
+      ...structuredClone(DEFAULT_SETTINGS),
+      ...this.state.settings,
+      calibrationResetAt: new Date(parsed).toISOString(),
     };
     this.#commit();
   }

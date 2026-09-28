@@ -80,8 +80,9 @@ function observationQuality(item, turns) {
   return nearby ? 0.1 : 0.35;
 }
 
-function samplesFor(turns, window, now) {
+function samplesFor(turns, window, now, resetAt) {
   return turns.flatMap((item) => {
+    if (resetAt !== null && (item.completedAt === null || item.completedAt < resetAt)) return [];
     const delta = Number(item.turn.rateLimitDelta?.[window]);
     if (!Number.isFinite(delta) || delta <= 0 || delta > MAX_OBSERVED_DELTA || !(item.cost > 0)) return [];
     const completedAt = item.completedAt ?? now;
@@ -133,15 +134,16 @@ function coefficient(logRate, source, samples, effectiveSamples) {
  * global value and only moves away as model-specific evidence accumulates. This supplies a
  * weak cross-model prior for cold starts without forcing all models to share one conversion.
  */
-export function quotaCalibration(sessions = {}, budgets = DEFAULT_BUDGETS, { now = Date.now() } = {}) {
+export function quotaCalibration(sessions = {}, budgets = DEFAULT_BUDGETS, { now = Date.now(), resetAt = null } = {}) {
   const turns = flattenTurns(sessions);
   const result = { models: {} };
   const models = new Set(turns.map((item) => item.model));
+  const resetTimestamp = timestamp(resetAt);
 
   for (const window of WINDOWS) {
     const fallback = 100 / Math.max(0.01, Number(budgets?.[window] || DEFAULT_BUDGETS[window]));
     const priorLog = Math.log(fallback);
-    const samples = samplesFor(turns, window, now);
+    const samples = samplesFor(turns, window, now, resetTimestamp);
     const effectiveSamples = samples.reduce((sum, sample) => sum + sample.weight, 0);
     const globalLog = robustLogMean(samples, priorLog, GLOBAL_PRIOR_WEIGHT);
     result[window] = coefficient(
@@ -190,6 +192,70 @@ export function estimateTurnQuota(turn, calibration, fallbackModel = null) {
   }));
 }
 
+function normalizedUsage(usage = {}) {
+  const inputTokens = Math.max(0, Number(usage.input_tokens || 0));
+  const cachedInputTokens = Math.min(inputTokens, Math.max(0, Number(usage.cached_input_tokens || 0)));
+  const cacheWriteInputTokens = Math.min(
+    inputTokens - cachedInputTokens,
+    Math.max(0, Number(usage.cache_write_input_tokens || 0)),
+  );
+  return {
+    input_tokens: inputTokens,
+    cached_input_tokens: cachedInputTokens,
+    cache_write_input_tokens: cacheWriteInputTokens,
+    output_tokens: Math.max(0, Number(usage.output_tokens || 0)),
+    reasoning_output_tokens: Math.max(0, Number(usage.reasoning_output_tokens || 0)),
+    total_tokens: Math.max(0, Number(usage.total_tokens || 0)),
+  };
+}
+
+function addUsage(left, right) {
+  return Object.fromEntries(Object.keys(left).map((key) => [key, left[key] + right[key]]));
+}
+
+export function usageSummary(usage = {}, model, referenceCost = null, approximate = false) {
+  const normalized = normalizedUsage(usage);
+  const uncachedInputTokens = Math.max(
+    0,
+    normalized.input_tokens - normalized.cached_input_tokens - normalized.cache_write_input_tokens,
+  );
+  return {
+    inputTokens: normalized.input_tokens,
+    uncachedInputTokens,
+    cachedInputTokens: normalized.cached_input_tokens,
+    cacheWriteInputTokens: normalized.cache_write_input_tokens,
+    outputTokens: normalized.output_tokens,
+    reasoningOutputTokens: normalized.reasoning_output_tokens,
+    totalTokens: normalized.total_tokens || normalized.input_tokens + normalized.output_tokens,
+    cacheHitRate: normalized.input_tokens > 0 ? normalized.cached_input_tokens / normalized.input_tokens : null,
+    referenceCost: referenceCost ?? weightedCost(normalized, model),
+    approximate,
+    model: normalizeModel(model),
+  };
+}
+
+function sessionUsageSummary(session) {
+  const empty = normalizedUsage();
+  const recordedUsage = (session.turns || []).reduce(
+    (sum, turn) => addUsage(sum, normalizedUsage(turn.usage)),
+    empty,
+  );
+  const conversationUsage = normalizedUsage(session.conversationUsage);
+  const usage = conversationUsage.total_tokens >= recordedUsage.total_tokens ? conversationUsage : recordedUsage;
+  const recordedCost = (session.turns || []).reduce(
+    (sum, turn) => sum + Number(turn.weightedCost ?? weightedCost(turn.usage, turn.model || session.model)),
+    0,
+  );
+  const missingUsage = Object.fromEntries(Object.keys(usage).map((key) => [key, Math.max(0, usage[key] - recordedUsage[key])]));
+  const hasMissing = missingUsage.total_tokens > 0;
+  return usageSummary(
+    usage,
+    session.model,
+    recordedCost + weightedCost(missingUsage, session.model),
+    hasMissing,
+  );
+}
+
 export function estimateSessionQuota(session, calibration) {
   if (!session) return null;
   const turns = session.turns || [];
@@ -213,7 +279,10 @@ export function estimateSessionQuota(session, calibration) {
 
 export function usageView(state, options) {
   const sessions = state.sessions || {};
-  const calibration = quotaCalibration(sessions, state.settings?.budgets, options);
+  const calibration = quotaCalibration(sessions, state.settings?.budgets, {
+    resetAt: state.settings?.calibrationResetAt,
+    ...options,
+  });
   return {
     ...state,
     calibration,
@@ -221,8 +290,14 @@ export function usageView(state, options) {
       const turns = (session.turns || []).map((turn) => ({
         ...turn,
         quotaEstimate: estimateTurnQuota(turn, calibration, session.model),
+        usageSummary: usageSummary(turn.usage, turn.model || session.model),
       }));
-      return [id, { ...session, turns, quotaEstimate: estimateSessionQuota(session, calibration) }];
+      return [id, {
+        ...session,
+        turns,
+        quotaEstimate: estimateSessionQuota(session, calibration),
+        usageSummary: sessionUsageSummary(session),
+      }];
     })),
   };
 }

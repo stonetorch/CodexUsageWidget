@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { weightedCost, quotaCalibration, estimateTurnQuota, usageView } from "../src/quota-estimator.mjs";
+import { weightedCost, quotaCalibration, estimateTurnQuota, usageSummary, usageView } from "../src/quota-estimator.mjs";
 
 const NOW = Date.parse("2026-09-28T12:00:00.000Z");
 
@@ -24,6 +24,10 @@ function session(id, model, turns) {
 test("prices cached, uncached, cache-write, and output tokens separately", () => {
   assert.equal(weightedCost({ input_tokens: 1_000_000, cached_input_tokens: 500_000, output_tokens: 100_000 }, "gpt-6-sol"), 1.05);
   assert.equal(weightedCost({ input_tokens: 100_000, cached_input_tokens: 40_000, cache_write_input_tokens: 20_000, output_tokens: 10_000 }, "gpt-6-sol"), 0.119);
+  const summary = usageSummary({ input_tokens: 100, cached_input_tokens: 70, cache_write_input_tokens: 10, output_tokens: 20 }, "gpt-6-sol");
+  assert.equal(summary.uncachedInputTokens, 20);
+  assert.equal(summary.cacheHitRate, 0.7);
+  assert.equal(summary.totalTokens, 120);
 });
 
 test("learns separate model coefficients while shrinking both toward cross-model history", () => {
@@ -61,6 +65,16 @@ test("recent evidence outweighs old history", () => {
   const withRecent = quotaCalibration({ one: session("one", "gpt-6-sol", [old, recent]) }, undefined, { now: NOW });
   const oldOnly = quotaCalibration({ one: session("one", "gpt-6-sol", [old]) }, undefined, { now: NOW });
   assert.ok(withRecent.primary.percentPerCostUnit > oldOnly.primary.percentPerCostUnit);
+});
+
+test("a calibration reset excludes earlier evidence without deleting usage history", () => {
+  const before = turn({ id: "before", primary: 20, start: NOW - 120_000, end: NOW - 60_000 });
+  const sessions = { one: session("one", "gpt-6-sol", [before]) };
+  const retained = quotaCalibration(sessions, undefined, { now: NOW });
+  const reset = quotaCalibration(sessions, undefined, { now: NOW, resetAt: new Date(NOW).toISOString() });
+  assert.equal(retained.primary.samples, 1);
+  assert.equal(reset.primary.samples, 0);
+  assert.equal(sessions.one.turns.length, 1);
 });
 
 test("downweights overlapping sessions and never treats account delta as an exact turn charge", () => {

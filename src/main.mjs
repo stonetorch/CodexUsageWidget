@@ -107,7 +107,11 @@ async function discoverAndInject() {
           return;
         }
         if (event.detail.method !== "Runtime.bindingCalled" || event.detail.params?.name !== "__codexUsageSaveSettings") return;
-        try { store.updateSettings(JSON.parse(event.detail.params.payload)); }
+        try {
+          const command = JSON.parse(event.detail.params.payload);
+          if (command?.action === "clearCalibrationEvidence") store.clearCalibrationEvidence();
+          else store.updateSettings(command?.settings || command);
+        }
         catch (error) { console.warn(`Ignored invalid widget settings: ${error.message}`); }
       });
       client.addEventListener("close", () => clients.delete(target.id));

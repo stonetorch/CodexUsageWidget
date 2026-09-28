@@ -13,10 +13,14 @@ try {
   store.updateSettings({ sidebar: true, turnBadges: true, budgets: { primary: 2, secondary: 10 } });
   const reopened = new StateStore(file);
   assert.deepEqual(reopened.snapshot().settings, {
-    sidebar: true, turnBadges: true, budgets: { primary: 2, secondary: 10 },
+    sidebar: true, turnBadges: true, budgets: { primary: 2, secondary: 10 }, calibrationResetAt: null,
   });
   reopened.updateSettings({ sidebar: false, turnBadges: false, budgets: { primary: -1, secondary: 0 } });
   assert.equal(new StateStore(file).snapshot().settings.budgets.primary, 2);
+  reopened.clearCalibrationEvidence("2026-09-28T12:00:00.000Z");
+  const reset = new StateStore(file).snapshot();
+  assert.equal(reset.settings.calibrationResetAt, "2026-09-28T12:00:00.000Z");
+  assert.deepEqual(reset.sessions, {});
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });
 }
