@@ -126,6 +126,26 @@ test("legacy and unknown turn usage is never treated as zero or trusted cost", (
   assert.equal(v.quotaEstimate.primary.percent, null);
   assert.equal(v.turns[0].usageSummary, null);
   assert.equal(v.turns[1].quotaEstimate.primary.percent, null);
+  assert.equal(v.turns[0].quotaEstimate.primary.reason, 'missing-token-usage');
+});
+
+test("token counts and reference cost remain available without quota calibration", () => {
+  const t = turn({ input: 100000 });
+  t.quotaObservations = [];
+  const v = usageView({ sessions: { s: session([t]) } }, { now: NOW }).sessions.s;
+  assert.equal(v.turns[0].quotaEstimate.primary.reason, 'insufficient-evidence');
+  assert.equal(v.turns[0].usageSummary.totalTokens, 100000);
+  assert.equal(v.turns[0].usageSummary.referenceCost, 0.1);
+  assert.equal(v.usageSummary.referenceCost, 0.1);
+  assert.equal(v.quotaEstimate.primary.reason, 'insufficient-evidence');
+});
+
+test("unknown model keeps token counts but has no invented reference price", () => {
+  const t = turn({ model: 'new-model' });
+  const v = usageView({ sessions: { s: session([t], t.model) } }, { now: NOW }).sessions.s;
+  assert.equal(v.turns[0].quotaEstimate.primary.reason, 'unknown-model');
+  assert.equal(v.turns[0].usageSummary.totalTokens, 1000);
+  assert.equal(v.turns[0].usageSummary.referenceCost, null);
 });
 
 test("valid mixed-model history sums individual estimates and may span multiple quota windows", () => {

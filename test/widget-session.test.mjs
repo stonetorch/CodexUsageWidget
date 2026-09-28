@@ -9,12 +9,16 @@ test("session marker matches rendered Markdown text", () => {
 });
 
 test("replaces an older injected widget implementation on update", () => {
-  assert.match(updateSource({}), /__codexUsageOverlayV2\?\.version!==6/);
+  assert.match(updateSource({}), /__codexUsageOverlayV2\?\.version!==7/);
 });
 
 
-test("quota display distinguishes unavailable evidence from measured zero", () => {
-  assert.equal(formatQuota({ percent: null }), "无法估算");
+test("quota display distinguishes missing tokens from missing model calibration", () => {
+  assert.equal(formatQuota(null), "--");
+  assert.equal(formatQuota({ percent: null, reason: "missing-token-usage" }), "--");
+  assert.equal(formatQuota({ percent: null, reason: "incomplete-history" }), "--");
+  assert.equal(formatQuota({ percent: null, reason: "insufficient-evidence" }), "无法估算");
+  assert.equal(formatQuota({ percent: null, reason: "unknown-model" }), "无法估算");
   assert.equal(formatQuota({ percent: NaN }), "无法估算");
   assert.equal(formatQuota({ percent: 0 }), "约 0%");
   assert.equal(formatQuota({ percent: 6 }), "约 6.00%");

@@ -148,7 +148,9 @@ function modelCoefficient(calibration, window, model) {
 export function estimateTurnQuota(turn, calibration, fallbackModel = null) {
   if (!turn) return null;
   const model = turn.model || fallbackModel;
-  const validUsage = turn.accountingVersion === 2 && turn.usage != null && modelWeights(model).known;
+  const hasUsage = turn.accountingVersion === 2 && turn.usage != null;
+  const knownModel = modelWeights(model).known;
+  const validUsage = hasUsage && knownModel;
   const cost = validUsage ? weightedCost(turn.usage, model) : null;
   return Object.fromEntries(WINDOWS.map((window) => {
     const learned = modelCoefficient(calibration, window, model);
@@ -157,7 +159,7 @@ export function estimateTurnQuota(turn, calibration, fallbackModel = null) {
       percent: valid ? cost * learned.percentPerCostUnit : null,
       source: valid ? learned.source : "unavailable",
       confidence: valid ? learned.confidence : "low",
-      reason: valid ? null : validUsage ? learned.reason : "unknown-usage-or-model",
+      reason: valid ? null : !hasUsage ? "missing-token-usage" : !knownModel ? "unknown-model" : learned.reason,
       samples: learned.samples,
     }];
   }));
@@ -221,7 +223,7 @@ export function usageSummary(usage = {}, model, referenceCost = null, approximat
     reasoningOutputTokens: normalized.reasoning_output_tokens,
     totalTokens: normalized.total_tokens || normalized.input_tokens + normalized.output_tokens,
     cacheHitRate: normalized.input_tokens > 0 ? normalized.cached_input_tokens / normalized.input_tokens : null,
-    referenceCost: referenceCost ?? weightedCost(normalized, model),
+    referenceCost: referenceCost ?? (modelWeights(model).known ? weightedCost(normalized, model) : null),
     approximate,
     model: normalizeModel(model),
   };
@@ -230,6 +232,7 @@ export function usageSummary(usage = {}, model, referenceCost = null, approximat
 function sessionUsageSummary(session) {
   const turns = session.turns || [];
   const verified = turns.filter((turn) => turn.accountingVersion === 2 && turn.usage != null);
+  if (!verified.length && !session.conversationUsage) return null;
   const recordedUsage = verified.reduce((sum, turn) => addUsage(sum, normalizedUsage(turn.usage)), normalizedUsage());
   const conversationUsage = normalizedUsage(session.conversationUsage);
   const usage = conversationUsage.total_tokens >= recordedUsage.total_tokens ? conversationUsage : recordedUsage;
@@ -253,7 +256,8 @@ export function estimateSessionQuota(session, calibration) {
     return [window, {
       percent: missing ? null : estimates.reduce((sum, estimate) => sum + estimate.percent, 0),
       source: missing ? "unavailable" : "calibrated",
-      reason: missing ? incomplete ? "incomplete-history" : "insufficient-evidence" : null,
+      reason: missing ? incomplete ? "incomplete-history"
+        : estimates.find((estimate) => estimate.percent === null)?.reason || "insufficient-evidence" : null,
       scope: "conversation-lifetime",
     }];
   }));
