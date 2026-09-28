@@ -68,7 +68,7 @@ export class AppServerClient extends EventTarget {
       clientInfo: {
         name: "codex_usage_overlay",
         title: "Codex Usage Overlay",
-        version: "0.1.0",
+        version: "0.2.0",
       },
       capabilities: { experimentalApi: false },
     });

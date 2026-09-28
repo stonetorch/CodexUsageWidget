@@ -44,6 +44,10 @@ async function parseWithRetry(filePath, turnId) {
 
 export function startHookServer({ port, store, logger = console }) {
   const server = http.createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/health") {
+      response.writeHead(200, { "content-type": "application/json" }).end('{"running":true}');
+      return;
+    }
     if (request.method !== "POST" || request.url !== "/hook") {
       response.writeHead(404).end();
       return;

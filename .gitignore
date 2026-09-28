@@ -2,4 +2,6 @@ node_modules/
 dist/
 output/
 .playwright-cli/
+launcher/bin/
+launcher/obj/
 *.log

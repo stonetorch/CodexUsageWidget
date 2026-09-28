@@ -1,63 +1,39 @@
-# Codex Usage Overlay
+# Codex Usage Widget（Windows）
 
-在 Windows Codex/ChatGPT 桌面应用的页面 DOM 中显示：
+双击 `dist/CodexUsageWidget.exe` 启动。EXE 内含 Node 运行时和项目脚本，首次运行会在 `%LOCALAPPDATA%\CodexUsageOverlay\runtime` 展开。无需单独安装 Node 或 .NET 运行时。
 
-- 输入栏附近的 5 小时额度和每周额度；
-- 当前对话累计 Token；
-- 每次完整模型回复的 Token 消耗；
-- 如果额度百分比在该轮发生可观察变化，同时显示该轮的近似百分比消耗。
+如果 Codex 已运行，启动器会再次调用官方应用以唤出窗口；若该进程本来就开放了本机 CDP 端口，Widget 会连接并显示。若已运行的 Codex 没有 CDP 端口，本次只唤出窗口。想显示 Widget，请从系统托盘完整退出 Codex，再双击 EXE，让启动器带 CDP 参数启动它。启动器保持在后台运行，日志在 `%LOCALAPPDATA%\CodexUsageOverlay\launcher.log`。
 
-它不会修改 Microsoft Store 的 MSIX 或 `app.asar`。启动器通过仅监听 `127.0.0.1` 的 Chromium DevTools Protocol 注入 UI，额度数据通过 Codex App Server 读取。
+Widget 位于输入栏底部按钮之间。点击它会显示设置面板，包含：
 
-## 精度
+- 5 小时与每周剩余额度；
+- 当前会话和上一轮对两个额度窗口的消耗估算；
+- 可单独开关的侧栏剩余额度、回复操作按钮旁的逐轮消耗；
+- 无观测样本时的粗估预算。
 
-每轮 Token 来自 Codex 当前会话记录中的累计 Token 计数差值，包括该轮的多次模型调用，因此比按照文字长度估算更准确。徽标的悬停提示会分别列出输入、缓存输入和输出 Token。
+可选注入默认关闭；界面结构不匹配或空间不足时，相应标记会隐藏，避免遮挡原生按钮。可以在 DevTools 中查看 `window.__CODEX_USAGE_WIDGET_DEBUG__` 了解输入栏 Widget 的定位状态。
 
-额度百分比来自服务端窗口数据，通常只有有限精度，并可能延迟更新；所以它始终标记为“约”。如果百分比在一轮内没有变化，就只显示精确 Token，不显示 `0%`。
+## 额度估算
 
-Codex 官方说明 transcript 格式不是稳定 Hook API。解析器无法识别未来格式时会停止显示该轮数据，不会编造数值；剩余额度仍可独立工作。
+剩余额度来自 Codex App Server 的 `account/rateLimits/read`。逐轮 Token 数由 Stop Hook 对本地会话记录中的累计计数求差。估算将普通输入、缓存输入、缓存写入及输出按模型分别加权；模型权重取自 [OpenAI API 标准价格](https://developers.openai.com/api/docs/pricing)，仅用于相对成本比较。ChatGPT 的 5 小时和每周额度并不是 API 美元账单。
 
-## 安装
+如果某轮的额度窗口实际变化可观测，程序会用这类样本分别校准两个窗口的“加权单位 → 百分比”比例；没有样本时使用设置面板中的粗估预算。百分比受服务端取整、异步更新、其它任务并发使用、模型改价和长上下文计价影响，始终显示“约”或“≈”。当前会话若有安装 Widget 之前的轮次，其成本只能用剩余 Token 和当前模型粗估。
 
-要求：Windows、Node.js 22 或更高版本、已登录的 Codex 桌面应用。
+首次运行会自动向 `~/.codex/hooks.json` 添加本项目的 Stop Hook，并在修改前备份。Codex 可能要求在应用内信任 Hook；在信任之前，“上一轮消耗”没有新数据。卸载可以运行 `uninstall-hooks.ps1`，或从 `hooks.json` 删除指向 `CodexUsageOverlay\runtime` 的 Stop Hook。
 
-1. 在 PowerShell 中运行：
+## 从源码构建
 
-   ```powershell
-   Set-ExecutionPolicy -Scope Process Bypass
-   .\install-hooks.ps1
-   ```
-
-2. Codex 弹出 Hook 审核时，确认命令路径属于本项目后选择信任。
-3. 从系统托盘彻底退出 ChatGPT/Codex。仅关闭窗口通常仍有后台进程。
-4. 运行：
-
-   ```powershell
-   .\start.ps1
-   ```
-
-启动器将重新打开官方应用并注入额度条。保持该 PowerShell 窗口运行。停止注入器不会退出 Codex，但下次刷新页面后注入内容会消失。
-
-## 卸载
-
-运行：
+Windows、Node.js 22+、.NET 8 SDK：
 
 ```powershell
-.\uninstall-hooks.ps1
+npm test
+.\build-exe.ps1
 ```
 
-随后退出注入器并正常重启 Codex。运行数据位于 `%LOCALAPPDATA%\CodexUsageOverlay`，可在注入器退出后自行删除。
+构建产物为单个 `dist/CodexUsageWidget.exe`。源码模式可运行 `start.ps1`。源码和打包模式都只监听本机回环地址；不要把 CDP 端口绑定到局域网。
 
-## 故障处理
+## 实现与限制
 
-- `already running without DOM debugging`：从托盘退出应用，确认任务管理器中没有 `ChatGPT.exe`，再运行 `start.ps1`。
-- 顶部显示“额度读取中”：确认 Codex 使用 ChatGPT 账户登录；API Key-only 登录不一定提供 ChatGPT 额度窗口。
-- 额度条显示但回复徽标没有出现：确认 Stop Hook 已获信任，并完成一轮新的对话。历史回复不会自动批量回填。
-- 官方更新后位置错误：输入框定位采用可见 textbox 启发式；先重启注入器。如果 DOM 结构发生较大变化，需要更新 `src/dom-overlay.mjs` 中的定位规则。
+输入栏定位采用多候选 Composer 检测、底部按钮按屏幕坐标分组、可用空隙计算、`body` 顶层 Shadow DOM 和固定定位。DOM、尺寸、窗口及滚动变化会触发重新定位。它依赖 Codex Desktop 当前 DOM，官方更新后仍可能需要更新定位器。
 
-## 数据与安全
-
-- 调试端口和 Hook 接收端口仅绑定本机回环地址。
-- 不读取或保存登录令牌。
-- 本地状态仅保存会话 ID、模型、Token 数、额度变化和最后一条回复文本，用于把徽标匹配到可见回复。
-- 不应把调试端口绑定到局域网地址。
+逐轮按钮旁标记必须找到对应回复文字和操作按钮行才会出现。当前版本没有在正在运行且未开启 CDP 的 Codex 进程中强行开启调试端口；这种情况下需要完整退出并由启动器重新启动。当前 Codex Desktop 真实页面需在完成这一重启后验证，仓库内 mock 页面覆盖了基本、侧栏、逐轮、窄窗口场景。

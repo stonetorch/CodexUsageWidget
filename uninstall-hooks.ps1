@@ -10,11 +10,13 @@ if (-not (Test-Path -LiteralPath $hooksFile)) {
 }
 
 $configuration = Get-Content -Raw -LiteralPath $hooksFile | ConvertFrom-Json -AsHashtable
+$backup = "$hooksFile.$(Get-Date -Format 'yyyyMMdd-HHmmss').bak"
+Copy-Item -LiteralPath $hooksFile -Destination $backup
 foreach ($eventName in @('Stop')) {
     if (-not $configuration.hooks.ContainsKey($eventName)) { continue }
     $kept = @()
     foreach ($entry in @($configuration.hooks[$eventName] | Where-Object { $null -ne $_ })) {
-        $handlers = @($entry.hooks | Where-Object { $_.command -notlike '*codex-usage-overlay*hook-client.mjs*' })
+        $handlers = @($entry.hooks | Where-Object { $_.command -notmatch '(?i)(codex-usage-overlay|CodexUsageOverlay).*(hook-client\.mjs|--hook-client)' })
         if ($handlers.Count -gt 0) {
             $entry.hooks = $handlers
             $kept += $entry

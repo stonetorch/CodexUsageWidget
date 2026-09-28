@@ -40,7 +40,8 @@ function subtractLimits(after, before) {
       result[key] = null;
       continue;
     }
-    result[key] = Math.max(0, after[key].usedPercent - before[key].usedPercent);
+    result[key] = after[key].resetsAt && before[key].resetsAt && after[key].resetsAt !== before[key].resetsAt
+      ? null : Math.max(0, after[key].usedPercent - before[key].usedPercent);
   }
   return result;
 }

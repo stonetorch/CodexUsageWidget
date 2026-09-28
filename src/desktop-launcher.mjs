@@ -21,11 +21,12 @@ export function isChatGptRunning() {
   return /ChatGPT\.exe/i.test(result.stdout || "");
 }
 
-export function launchChatGpt(debugPort) {
+export function launchChatGpt(debugPort = null) {
   const executable = findChatGptExecutable();
-  const child = spawn(executable, [
+  const args = debugPort == null ? [] : [
     `--remote-debugging-port=${debugPort}`,
     "--remote-debugging-address=127.0.0.1",
-  ], { detached: true, stdio: "ignore", windowsHide: false });
+  ];
+  const child = spawn(executable, args, { detached: true, stdio: "ignore", windowsHide: false });
   child.unref();
 }

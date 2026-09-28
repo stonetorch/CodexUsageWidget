@@ -1,7 +1,13 @@
 import fs from "node:fs";
-import { ensureAppDataDirectory, statePath } from "./config.mjs";
+import path from "node:path";
+import { statePath } from "./config.mjs";
 
-const EMPTY_STATE = { version: 1, updatedAt: null, limits: null, sessions: {} };
+export const DEFAULT_SETTINGS = Object.freeze({
+  sidebar: false,
+  turnBadges: false,
+  budgets: { primary: 1, secondary: 5 },
+});
+const EMPTY_STATE = { version: 2, updatedAt: null, limits: null, sessions: {}, settings: DEFAULT_SETTINGS };
 
 export class StateStore extends EventTarget {
   constructor(filePath = statePath()) {
@@ -16,6 +22,23 @@ export class StateStore extends EventTarget {
 
   setLimits(limits) {
     this.state.limits = limits;
+    this.#commit();
+  }
+
+  updateSettings(input) {
+    if (!input || typeof input !== "object") return;
+    const settings = this.state.settings || DEFAULT_SETTINGS;
+    const budgets = input.budgets || {};
+    const positive = (value, fallback) => Number.isFinite(Number(value)) && Number(value) >= 0.01 && Number(value) <= 1000
+      ? Number(value) : fallback;
+    this.state.settings = {
+      sidebar: input.sidebar === true,
+      turnBadges: input.turnBadges === true,
+      budgets: {
+        primary: positive(budgets.primary, settings.budgets?.primary ?? DEFAULT_SETTINGS.budgets.primary),
+        secondary: positive(budgets.secondary, settings.budgets?.secondary ?? DEFAULT_SETTINGS.budgets.secondary),
+      },
+    };
     this.#commit();
   }
 
@@ -55,14 +78,23 @@ export class StateStore extends EventTarget {
 
   #read() {
     try {
-      return { ...structuredClone(EMPTY_STATE), ...JSON.parse(fs.readFileSync(this.filePath, "utf8")) };
+      const saved = JSON.parse(fs.readFileSync(this.filePath, "utf8"));
+      return {
+        ...structuredClone(EMPTY_STATE),
+        ...saved,
+        settings: {
+          ...structuredClone(DEFAULT_SETTINGS),
+          ...saved.settings,
+          budgets: { ...DEFAULT_SETTINGS.budgets, ...saved.settings?.budgets },
+        },
+      };
     } catch {
       return structuredClone(EMPTY_STATE);
     }
   }
 
   #commit() {
-    ensureAppDataDirectory();
+    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     this.state.updatedAt = new Date().toISOString();
     fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2));
     this.dispatchEvent(new Event("changed"));

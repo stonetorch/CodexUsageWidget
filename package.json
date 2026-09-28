@@ -1,13 +1,13 @@
 {
   "name": "codex-usage-overlay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Runtime DOM overlay for Codex desktop usage limits and per-turn token usage.",
   "scripts": {
     "start": "node src/main.mjs",
     "attach": "node src/main.mjs --attach",
-    "test": "node test/transcript.test.mjs && node test/layout.test.mjs"
+    "test": "node test/transcript.test.mjs && node test/placement.test.mjs && node test/quota-estimator.test.mjs && node test/hook-installer.test.mjs && node test/state-store.test.mjs"
   },
   "engines": {
     "node": ">=22"

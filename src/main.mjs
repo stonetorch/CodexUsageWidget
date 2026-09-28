@@ -3,14 +3,29 @@ import { AppServerClient } from "./app-server-client.mjs";
 import { CdpClient, listCdpTargets } from "./cdp-client.mjs";
 import { connectionPath, ensureAppDataDirectory, parseArgs } from "./config.mjs";
 import { launchChatGpt, isChatGptRunning } from "./desktop-launcher.mjs";
-import { updateSource } from "./dom-overlay.mjs";
+import { updateSource } from "./widget-overlay.mjs";
+import { ensureHookInstalled } from "./hook-installer.mjs";
 import { startHookServer } from "./hook-server.mjs";
 import { StateStore } from "./state-store.mjs";
 import { normalizeRateLimitsResult } from "./transcript.mjs";
+import { usageView } from "./quota-estimator.mjs";
 
 async function run() {
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const options = parseArgs(process.argv.slice(2));
+const appWasRunning = isChatGptRunning();
+
+async function anotherOverlayIsRunning() {
+  try {
+    const response = await fetch(`http://127.0.0.1:${options.hookPort}/health`, { signal: AbortSignal.timeout(500) });
+    return response.ok;
+  } catch { return false; }
+}
+if (await anotherOverlayIsRunning()) {
+  launchChatGpt(appWasRunning ? null : options.debugPort);
+  console.log("Codex window activated; usage widget is already running.");
+  return;
+}
 
 let targets;
 try {
@@ -19,11 +34,13 @@ try {
   if (options.attach) {
     throw new Error(`No Codex debugging endpoint found on 127.0.0.1:${options.debugPort}`);
   }
-  if (isChatGptRunning()) {
-    throw new Error("ChatGPT/Codex is already running without DOM debugging. Fully quit it from the tray, then run start.ps1.");
+  if (appWasRunning) {
+    launchChatGpt();
+    console.log("Codex window activated. It was started without CDP; restart it through this launcher to enable the widget.");
+    return;
   }
   launchChatGpt(options.debugPort);
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
     await delay(250);
     try {
       targets = await listCdpTargets(options.debugPort);
@@ -32,8 +49,12 @@ try {
   }
 }
 if (!targets?.length) throw new Error("Codex started, but no injectable renderer was exposed");
+if (appWasRunning) launchChatGpt();
 
 ensureAppDataDirectory();
+try {
+  if (ensureHookInstalled()) console.log("Installed Stop hook; Codex may request trust confirmation.");
+} catch (error) { console.warn(`Could not install Stop hook: ${error.message}`); }
 fs.writeFileSync(connectionPath(), JSON.stringify({ hookPort: options.hookPort, debugPort: options.debugPort }));
 
 const store = new StateStore();
@@ -74,18 +95,33 @@ async function discoverAndInject() {
     try {
       const client = new CdpClient(target.webSocketDebuggerUrl);
       await client.connect();
+      await client.request("Runtime.enable");
+      try { await client.request("Runtime.addBinding", { name: "__codexUsageSaveSettings" }); }
+      catch (error) { console.warn(`Settings bridge unavailable for ${target.id}: ${error.message}`); }
+      try { await client.request("Page.enable"); } catch { /* Some webviews omit Page domain. */ }
+      client.addEventListener("notification", (event) => {
+        if (event.detail.method === "Page.frameNavigated" && !event.detail.params?.frame?.parentId) {
+          setTimeout(() => void client.evaluate(updateSource(usageView(store.snapshot()))).catch(() => {}), 250);
+          return;
+        }
+        if (event.detail.method !== "Runtime.bindingCalled" || event.detail.params?.name !== "__codexUsageSaveSettings") return;
+        try { store.updateSettings(JSON.parse(event.detail.params.payload)); }
+        catch (error) { console.warn(`Ignored invalid widget settings: ${error.message}`); }
+      });
       client.addEventListener("close", () => clients.delete(target.id));
       clients.set(target.id, client);
-      await client.evaluate(updateSource(store.snapshot()));
+      await client.evaluate(updateSource(usageView(store.snapshot())));
       console.log(`Injected usage UI into: ${target.title || target.url || target.id}`);
     } catch (error) {
+      clients.get(target.id)?.close();
+      clients.delete(target.id);
       console.warn(`Could not inject target ${target.id}: ${error.message}`);
     }
   }
 }
 
 async function pushState() {
-  const expression = updateSource(store.snapshot());
+  const expression = updateSource(usageView(store.snapshot()));
   await Promise.allSettled([...clients.values()].map((client) => client.evaluate(expression)));
 }
 

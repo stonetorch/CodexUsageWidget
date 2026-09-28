@@ -29,8 +29,10 @@ export class CdpClient extends EventTarget {
     return promise;
   }
 
-  evaluate(expression) {
-    return this.request("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  async evaluate(expression) {
+    const response = await this.request("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+    if (response?.exceptionDetails) throw new Error(response.exceptionDetails.text || "Injected script failed");
+    return response;
   }
 
   close() {
@@ -40,7 +42,10 @@ export class CdpClient extends EventTarget {
   #onMessage(raw) {
     let message;
     try { message = JSON.parse(raw); } catch { return; }
-    if (message.id == null) return;
+    if (message.id == null) {
+      if (message.method) this.dispatchEvent(new CustomEvent("notification", { detail: message }));
+      return;
+    }
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
