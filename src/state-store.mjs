@@ -7,7 +7,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   turnBadges: false,
   budgets: { primary: 1, secondary: 5 },
 });
-const EMPTY_STATE = { version: 2, updatedAt: null, limits: null, sessions: {}, settings: DEFAULT_SETTINGS };
+const EMPTY_STATE = { version: 3, updatedAt: null, limits: null, sessions: {}, settings: DEFAULT_SETTINGS };
 
 export class StateStore extends EventTarget {
   constructor(filePath = statePath()) {
@@ -60,7 +60,8 @@ export class StateStore extends EventTarget {
     session.updatedAt = new Date().toISOString();
     const record = {
       turnId,
-      completedAt: new Date().toISOString(),
+      startedAt: metrics.startedAt || null,
+      completedAt: metrics.completedAt || new Date().toISOString(),
       model: metrics.model || event.model || null,
       usage: metrics.turnUsage,
       rateLimitDelta: metrics.rateLimitDelta,
@@ -82,6 +83,7 @@ export class StateStore extends EventTarget {
       return {
         ...structuredClone(EMPTY_STATE),
         ...saved,
+        version: EMPTY_STATE.version,
         settings: {
           ...structuredClone(DEFAULT_SETTINGS),
           ...saved.settings,

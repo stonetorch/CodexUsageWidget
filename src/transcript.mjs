@@ -59,6 +59,11 @@ function extractAssistantText(item) {
   return null;
 }
 
+function entryTimestamp(entry) {
+  const value = entry?.timestamp ?? entry?.payload?.timestamp;
+  return Number.isFinite(Date.parse(value || "")) ? new Date(value).toISOString() : null;
+}
+
 export function parseTranscriptText(text, requestedTurnId = null) {
   const entries = [];
   for (const line of text.split(/\r?\n/)) {
@@ -73,6 +78,7 @@ export function parseTranscriptText(text, requestedTurnId = null) {
   let targetIndex = -1;
   let turnId = requestedTurnId;
   let model = null;
+  let startedAt = null;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (entry.type !== "turn_context") continue;
@@ -81,6 +87,7 @@ export function parseTranscriptText(text, requestedTurnId = null) {
       targetIndex = index;
       turnId = candidate || turnId;
       model = entry.payload?.model ?? null;
+      startedAt = entryTimestamp(entry);
       break;
     }
   }
@@ -100,8 +107,10 @@ export function parseTranscriptText(text, requestedTurnId = null) {
   let finalUsage = null;
   let finalLimits = null;
   let lastAssistantMessage = null;
+  let completedAt = startedAt;
   for (let index = targetIndex + 1; index < entries.length; index += 1) {
     if (entries[index]?.type === "turn_context") break;
+    completedAt = entryTimestamp(entries[index]) || completedAt;
     const payload = entries[index]?.payload;
     if (entries[index]?.type === "event_msg" && payload?.type === "token_count" && payload.info) {
       finalUsage = payload.info.total_token_usage || finalUsage;
@@ -114,6 +123,8 @@ export function parseTranscriptText(text, requestedTurnId = null) {
   return {
     turnId,
     model,
+    startedAt,
+    completedAt,
     turnUsage: subtractUsage(finalUsage, baselineUsage),
     conversationUsage: Object.fromEntries(TOKEN_FIELDS.map((field) => [field, Number(finalUsage[field] || 0)])),
     rateLimitDelta: subtractLimits(finalLimits, baselineLimits),

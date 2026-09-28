@@ -91,7 +91,8 @@ function bootstrap(state, place, overlaps, makeMarker) {
     $("remaining").textContent=`剩余：5 小时 ${remaining(limits.primary)} · 每周 ${remaining(limits.secondary)}`;
     $("session").textContent=`当前会话消耗：5 小时约 ${percent(session?.quotaEstimate?.primary?.percent)} · 每周约 ${percent(session?.quotaEstimate?.secondary?.percent)}`;
     $("previous").textContent=`上一轮消耗：5 小时约 ${percent(last?.quotaEstimate?.primary?.percent)} · 每周约 ${percent(last?.quotaEstimate?.secondary?.percent)}`;
-    $("confidence").textContent=`估算依据：5 小时 ${current.calibration?.primary?.source==="observed"?`已校准 ${current.calibration.primary.samples} 次`:"粗估"}；每周 ${current.calibration?.secondary?.source==="observed"?`已校准 ${current.calibration.secondary.samples} 次`:"粗估"}。额度与 API 账单并非同一计量。`;
+    const calibrationText=(value)=>value?.source==="calibrated"?`动态校准 ${value.samples} 条样本`:"历史不足，使用跨模型先验";
+    $("confidence").textContent=`估算依据：5 小时 ${calibrationText(current.calibration?.primary)}；每周 ${calibrationText(current.calibration?.secondary)}。历史样本按时间衰减，并降低并发会话的权重。`;
     $("sidebar").checked=current.settings?.sidebar===true;
     $("turns").checked=current.settings?.turnBadges===true;
     $("budget-five").value=String(current.settings?.budgets?.primary??1);
