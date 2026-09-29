@@ -4,12 +4,17 @@ A Windows overlay that shows your **5-hour / weekly remaining quota** and **per-
 
 [简体中文](README.md) | **English**
 
+![The quota pill between the Codex composer's bottom buttons, showing 5h left 35%, weekly 35%, last turn ~19.2% / ~3.18%](doc/images/composer-overlay.webp)
+
 Everything stays on your machine: the widget injects itself into the Codex renderer through a local CDP port and never sends data anywhere.
 
 ## Features
 
 - A pill-shaped widget between the composer's bottom buttons, showing 5-hour and weekly remaining quota in real time;
 - Click it to open a panel with remaining quota, session-to-date totals, last-turn usage, and a token breakdown (total tokens, output, uncached input, cached input, cache writes, cache hit rate, reference cost, model);
+
+  ![The expanded panel: remaining quota, session-to-date totals, last-turn usage, and the token breakdown, with the estimates & settings entry at the bottom](doc/images/usage-panel.webp)
+
 - Optional markers: remaining quota in the sidebar and a per-turn badge next to the reply action buttons. Both are off by default and never cover native controls;
 - The estimates & settings page inside the panel exposes the calibration evidence, lets you clear it, and shows runtime status plus the overlay version;
 - Explanatory text is tucked behind a small ⓘ marker; hover or long-press to read it.
