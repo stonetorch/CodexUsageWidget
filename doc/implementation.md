@@ -97,11 +97,7 @@ App Server ┘                                    ←─ 设置回传（Runtime 
 
 ## 额度估算
 
-- 权重表 `MODEL_WEIGHTS` 用 OpenAI API 短上下文标准价格（每 1M token）作为相对权重，按模型名前缀匹配，未知模型回落到 `gpt-6-sol` 并标记 `known: false`。
-- `weightedCost` 先把 cached 与 cacheWrite 各自夹在 input 之内，避免异常数据重复计数，再按 `(uncached·input + cached·cached + cacheWrite·cacheWrite + output·output) / 1e6` 求和。
-- `quotaCalibration` 只用**同一轮内**的 `codex` 账户快照；按窗口 × 模型 × 重置周期分桶，用 30 分钟上限过滤异常区间、按 21 天半衰期衰减旧证据、丢弃并发/重置/回退观测；零增量区间同样计入成本；系数 = Σ增量 / Σ成本，需要同模型至少 2 个百分点的观测增量才产出 `calibrated`。
-- 校准证据不足但本轮有连续快照时，退回 `observed-lower-bound`：取快照间已观测到的最低消耗比例，展示为“至少 x%”。
-- 旧的 `budgets` 设置字段只为兼容保留，不参与任何计算。
+权重表、校准分桶、显示分支等细节见 [quota-estimation.md](quota-estimation.md)。这里的边界只有一条：`quota-estimator.mjs` 是纯计算模块，只消费 `state-store` 交出的轮次记录（每轮带 `quotaObservations`），自己不读文件、不连网、不感知 CDP。
 
 ## 启动器与 MSIX
 
@@ -138,6 +134,6 @@ AUMID 靠 PowerShell 读包清单（约 1 秒）得到，缓存在 `aumid.txt`�
 src/          ESM 运行时（见上文模块职责表）
 launcher/     .NET 8 单文件启动器：把内嵌的 Node 运行时与 src/*.mjs 解包到 runtime，再启动 Node 子进程并把输出写进 launcher.log（激活 Codex 在 Node 侧完成）
 test/         断言测试与 mock 页面
-doc/          本文件
+doc/          设计文档：本文件、quota-estimation.md（额度估算）、limits.md（已知限制）
 *.ps1         Hook 安装/卸载、源码启动、打包
 ```

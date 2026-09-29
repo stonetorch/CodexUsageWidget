@@ -42,37 +42,11 @@ A turn without a baseline is marked unknown, so inherited history is never attri
 
 While the current conversation has an unfinished turn, the widget shows that turn's usage as of the latest log write; once the turn completes it goes back to "last turn". That way last-turn usage updates after the record lands even if the hook is skipped or its delivery fails — a hook request only reports success once the write succeeded.
 
-## How the quota estimate is made
+## Quota estimation
 
-### Reference cost
+The remaining quota comes straight from Codex and is exact; the estimate answers "how much quota did this turn roughly consume". It **back-solves a per-model conversion coefficient from quota snapshots taken inside the same turn** rather than applying a guessed fixed budget, falls back to "at least x%" and then "cannot estimate" when evidence is thin, and never borrows another model's coefficient.
 
-Uncached input, cached input, cache writes, and output are priced with per-model weights derived from the [OpenAI API standard prices](https://developers.openai.com/api/docs/pricing). This is a relative estimate only — **not a ChatGPT quota bill**.
-
-### Calibrated against real quota
-
-The remaining quota itself is exact; the hard part is converting tokens into quota consumption. Instead of guessing with a fixed budget, the widget back-solves from **quota snapshots taken inside the same turn**:
-
-- The turn's token cost over the same interval is the denominator, and the quota delta is the numerator, giving that model's conversion coefficient;
-- Quota windows, models, and reset periods are grouped separately, and intervals with zero quota delta still count toward cost;
-- Observations with known concurrency, quota resets, counter rollbacks, or abnormal time ranges are excluded;
-- Older evidence decays on a 21-day half-life, and a model needs at least 2 percentage points of observed delta before it produces an estimate.
-
-Account snapshots can still be rounded, delayed, or include activity this machine never recorded, so estimates read "约" (approximately).
-
-### Display rules
-
-| Situation | Display |
-| --- | --- |
-| Per-turn tokens cannot be confirmed | `--` |
-| Reliable token data, but the model is unknown or same-model calibration is missing | 无法估算 (cannot estimate) |
-| Calibration is insufficient, but consecutive quota snapshots exist for this turn | 至少 x% (at least x% — the lowest consumption ratio observed between snapshots) |
-| Not even snapshots are available | 无法估算 (cannot estimate) |
-
-Token usage is still shown on its own, and models with known prices still show a reference cost. The default API-cost budget is no longer used to convert quota, and no other model's coefficient is borrowed. The budget fields in old settings are kept for compatibility only and do not participate in any calculation.
-
-### What "session total" means
-
-The session total is **how much the entire session history amounts to in full quota windows** — not how much of the current 5-hour or weekly window is used. If a session's total tokens exceed the sum of its recorded per-turn tokens while every recorded turn is verifiable, the widget shows the accumulation over those turns and adds a ⓘ marker whose tooltip reads "recorded turns only; not all historical tokens are attributed, so the real total may be higher". Unattributed historical tokens are never back-filled at a fixed cache ratio, and a reference cost for the whole session is not provided.
+The full rules, what each display state means (`--`, cannot estimate, at least x%, approximately), and the implementation are in **[doc/quota-estimation.md](doc/quota-estimation.md)** (Chinese).
 
 ## Troubleshooting
 
@@ -106,8 +80,16 @@ Source mode and the packaged build both listen on loopback only; never bind the 
 
 ## Known limits
 
-- The widget depends on the current Codex Desktop DOM, so an official UI update may break it until the locators are updated. When the structure doesn't match or there is too little space, the widget and its markers hide instead of covering native buttons.
-- It does not force a debug port open inside an already running Codex that has none; that case needs a full exit and a restart through the launcher.
-- A per-turn badge only appears when both the reply text and its action-button row are found; otherwise that turn shows no badge.
+The widget depends on the current Codex Desktop DOM, so an official UI update may break it until the locators are updated. Codex already running without a CDP port needs a full exit and restart before the widget can be injected. When the structure doesn't match or there is too little space, the widget and its markers hide instead of covering native buttons.
 
-Implementation details (composer placement, the launcher and MSIX activation, the runtime directory, overlay versioning, module layout) are in [doc/implementation.md](doc/implementation.md) (Chinese).
+The full list and the reasons behind each are in **[doc/limits.md](doc/limits.md)** (Chinese).
+
+## More documentation
+
+The design documents are Chinese-only.
+
+| Document | Contents |
+| --- | --- |
+| [doc/quota-estimation.md](doc/quota-estimation.md) | Quota estimation: back-solving approach, display rules, session-total semantics, implementation |
+| [doc/limits.md](doc/limits.md) | Known limits: UI dependence, launch requirements, data completeness |
+| [doc/implementation.md](doc/implementation.md) | Design and implementation: data flow, modules, injection and settings bridge, composer placement, launcher and MSIX, runtime directory, state persistence |
