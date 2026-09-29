@@ -20,6 +20,24 @@ test("expanded settings show the current overlay version", () => {
   assert.match(source, new RegExp(WIDGET_DISPLAY_VERSION));
 });
 
+test("settings show CDP delivery and the backend's last successful state write", () => {
+  const source = updateSource({ persistence: { lastPersistedAt: "2026-09-29T02:32:00.000Z", error: null } });
+  assert.match(source, /上次收到 CDP 更新/);
+  assert.match(source, /state\.json 最近成功写入（后端报告）/);
+  assert.match(source, /lastCdpUpdateAt=Date\.now\(\)/);
+  assert.match(source, /current\.persistence\?\.lastPersistedAt/);
+});
+
+test("estimation evidence and display options open in a separate settings page", () => {
+  const source = updateSource({});
+  assert.match(source, /id="settings-open"/);
+  assert.match(source, /id="settings-view" hidden/);
+  assert.match(source, /id="settings-back"/);
+  assert.match(source, /估算与设置/);
+  assert.match(source, /settingsPage=true/);
+  assert.match(source, /settingsPage=false/);
+});
+
 test("session marker preserves identifier underscores and decodes HTML spaces", () => {
   const transcript = "> 选中 session_id：（无法从当前页面提取） &#x20;\n\n在一些情境下出现了无法提取session_id的情况";
   const rendered = "选中 session_id：（无法从当前页面提取） 在一些情境下出现了无法提取session_id的情况";
@@ -46,6 +64,9 @@ test("overlay targets Codex app pages rather than embedded webviews", () => {
 
 test("runtime diagnostics distinguish page ID from state session selection", () => {
   const source = updateSource({});
+  const usageMarkup = source.slice(source.indexOf('<div id="usage-view"'), source.indexOf('<div id="settings-view"'));
+  assert.doesNotMatch(usageMarkup, /id="runtime-status"/);
+  assert.match(source, /<fieldset><strong>调试信息<\/strong><p class="hint" id="runtime-status"><\/p>/);
   assert.match(source, /页面 session_id/);
   assert.match(source, /state 会话/);
   assert.match(source, /page-id-untracked/);
@@ -65,7 +86,12 @@ test("quota display distinguishes missing tokens from missing model calibration"
   assert.equal(formatQuota({ percent: 6 }), "约 6.00%");
 });
 
-test("partial session history is labeled beside its displayed estimate", () => {
+test("session hints are compact hover markers instead of inline sentences", () => {
   const source = updateSource({});
-  assert.match(source, /仅含已记录轮次，历史 token 未全部归属，实际累计可能更高/);
+  const usageMarkup = source.slice(source.indexOf('<div id="usage-view"'), source.indexOf('<div id="settings-view"'));
+  assert.match(usageMarkup, /<span class="mark" id="session-window-mark"[^>]*title="完整窗口等值：[^"]+">ⓘ<\/span>/);
+  assert.match(usageMarkup, /<span class="mark" id="session-partial-mark"[^>]*title="仅含已记录轮次：[^"]+" hidden>ⓘ<\/span>/);
+  assert.doesNotMatch(usageMarkup, /（完整窗口等值）/);
+  assert.match(source, /id="session-values"/);
+  assert.match(source, /\$\("session-partial-mark"\)\.hidden=!partialHistory/);
 });

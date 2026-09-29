@@ -2,7 +2,7 @@ import { toolbarPlacement, intersects } from "./placement.mjs";
 
 // Keep the user-facing version paired with the injected implementation version.
 // Bump both when a new overlay implementation is released.
-export const WIDGET_IMPLEMENTATION_VERSION = 13;
+export const WIDGET_IMPLEMENTATION_VERSION = 17;
 export const WIDGET_DISPLAY_VERSION = `v${WIDGET_IMPLEMENTATION_VERSION}`;
 
 export function messageMarker(value) {
@@ -43,11 +43,13 @@ export function formatQuota(estimate) {
 function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implementationVersion, displayVersion) {
   if (window.__codexUsageOverlayV2) { window.__codexUsageOverlayV2.update(state); return; }
   let current = state || {};
+  let lastCdpUpdateAt = Date.now();
   let preferred = null;
   let watched = null;
   let open = false;
   let detailScope = "last";
   let evidenceOpen = false;
+  let settingsPage = false;
   let scheduled;
   const turnHosts = new Map();
   const host = document.createElement("span");
@@ -61,16 +63,19 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
     :host([data-narrow=true]) .last{display:none}
     .panel{position:absolute;bottom:calc(100% + 8px);left:var(--panel-left,0px);width:380px;max-width:calc(100vw - 16px);max-height:78vh;overflow:auto;padding:14px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 12px 32px #0005;font:12px/1.5 system-ui,'Segoe UI',sans-serif;pointer-events:auto}
     :host([data-panel-below=true]) .panel{top:calc(100% + 8px);bottom:auto}
-    .panel[hidden],[hidden]{display:none!important}.panel h2{font-size:14px;margin:0 0 8px}.panel p{margin:6px 0}.panel fieldset{border:0;border-top:1px solid color-mix(in srgb,CanvasText 16%,transparent);padding:8px 0 0;margin:10px 0 0}.panel label{display:flex;align-items:center;gap:6px;margin:6px 0}.panel input[type=number]{width:65px;background:Canvas;color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 35%,transparent);border-radius:4px;padding:2px}.hint{opacity:.7}
+    .panel[hidden],[hidden]{display:none!important}.panel h2{font-size:14px;margin:0 0 8px}.panel p{margin:6px 0}.mark{margin-left:2px;opacity:.6;cursor:help;font-size:11px}.mark:hover{opacity:1}.panel fieldset{border:0;border-top:1px solid color-mix(in srgb,CanvasText 16%,transparent);padding:8px 0 0;margin:10px 0 0}.panel label{display:flex;align-items:center;gap:6px;margin:6px 0}.panel input[type=number]{width:65px;background:Canvas;color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 35%,transparent);border-radius:4px;padding:2px}.hint{opacity:.7}
     .tabs{display:flex;gap:4px;margin:7px 0}.tabs button,.small{border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:7px;background:transparent;color:CanvasText;padding:4px 8px;font:inherit}.tabs button[aria-selected=true]{background:color-mix(in srgb,CanvasText 14%,Canvas);font-weight:650}
     .metrics{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,Canvas)}.metric{display:flex;justify-content:space-between;gap:8px}.metric span{opacity:.7}.metric strong{font-variant-numeric:tabular-nums;text-align:right}
-    .section-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.evidence{max-height:190px;overflow:auto;margin-top:6px}.evidence table{width:100%;border-collapse:collapse;font-size:10px;font-variant-numeric:tabular-nums}.evidence th,.evidence td{padding:3px 4px;border-bottom:1px solid color-mix(in srgb,CanvasText 10%,transparent);text-align:right}.evidence th:first-child,.evidence td:first-child{text-align:left;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.danger{margin-top:8px;border-color:#d55!important;color:#d55!important}
+    .page-head,.section-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.page-head h2{margin:0;flex:1;text-align:center}.page-head .small{padding:3px 6px}.page-head::after{content:"";width:45px}.settings-link{display:flex;align-items:center;justify-content:space-between;width:100%;padding:9px 10px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:8px;background:color-mix(in srgb,CanvasText 4%,Canvas);color:CanvasText;font:inherit;text-align:left}.settings-link strong,.settings-link small{display:block}.settings-link small{margin-top:2px;opacity:.7}.settings-link .chevron{font-size:20px;line-height:1;opacity:.65}.evidence{max-height:190px;overflow:auto;margin-top:6px}.evidence table{width:100%;border-collapse:collapse;font-size:10px;font-variant-numeric:tabular-nums}.evidence th,.evidence td{padding:3px 4px;border-bottom:1px solid color-mix(in srgb,CanvasText 10%,transparent);text-align:right}.evidence th:first-child,.evidence td:first-child{text-align:left;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.danger{margin-top:8px;border-color:#d55!important;color:#d55!important}
   </style><button class="widget" aria-expanded="false"><span id="five">5h --</span><span>·</span><span id="week">周 --</span><span>·</span><span class="last" id="last">上轮 --</span><span class="gear">⚙</span></button>
-  <section class="panel" hidden><h2>用量与设置</h2><p id="remaining"></p><p id="session"></p><p id="previous"></p><p class="hint" id="runtime-status"></p>
+  <section class="panel" hidden><div id="usage-view"><h2>用量</h2><p id="remaining"></p><p id="session"><span>会话历史累计</span><span class="mark" id="session-window-mark" aria-label="完整窗口等值说明" title="完整窗口等值：这里显示的是整个会话历史累计相当于多少个完整额度窗口，而不是当前 5 小时或每周窗口已用的额度。">ⓘ</span><span id="session-values"></span><span class="mark" id="session-partial-mark" aria-label="已记录轮次范围说明" title="仅含已记录轮次：部分历史 token 未归属到具体轮次，未计入上述累计且不按固定比例补算，因此实际历史累计可能更高。" hidden>ⓘ</span></p><p id="previous"></p>
   <fieldset><div class="tabs" role="tablist"><button id="scope-last" type="button" role="tab">上一轮</button><button id="scope-session" type="button" role="tab">当前会话</button></div><div class="metrics"><div class="metric"><span>总 token</span><strong id="metric-total">--</strong></div><div class="metric"><span>输出 token</span><strong id="metric-output">--</strong></div><div class="metric"><span>未缓存输入</span><strong id="metric-uncached">--</strong></div><div class="metric"><span>缓存输入</span><strong id="metric-cached">--</strong></div><div class="metric"><span>缓存写入</span><strong id="metric-write">--</strong></div><div class="metric"><span>缓存命中率</span><strong id="metric-hit">--</strong></div><div class="metric"><span>参考费用</span><strong id="metric-cost">--</strong></div><div class="metric"><span>模型</span><strong id="metric-model">--</strong></div></div><p class="hint" id="metric-note"></p></fieldset>
+  <fieldset><button class="settings-link" id="settings-open" type="button"><span><strong>估算与设置</strong><small>估算证据、显示选项</small></span><span class="chevron" aria-hidden="true">›</span></button></fieldset></div>
+  <div id="settings-view" hidden><div class="page-head"><button class="small" id="settings-back" type="button">← 返回</button><h2>估算与设置</h2></div>
   <fieldset><div class="section-head"><strong>估算证据</strong><button class="small" id="evidence-toggle" type="button">查看详情</button></div><p id="confidence"></p><div class="evidence" id="evidence-details" hidden><table><thead><tr><th>模型</th><th>5h 组/权重</th><th>5h 系数</th><th>周 组/权重</th><th>周系数</th></tr></thead><tbody id="evidence-body"></tbody></table></div><button class="small danger" id="evidence-clear" type="button">清空用于估算的证据</button></fieldset>
   <fieldset><label><input id="sidebar" type="checkbox">侧栏显示剩余额度</label><label><input id="turns" type="checkbox">回复按钮旁显示本轮消耗</label></fieldset>
-  <p class="hint">会话累计值表示整个历史相当于完整额度窗口的比例，不代表当前窗口已用额度。</p><p class="hint" id="widget-version"></p></section>`;
+  <fieldset><strong>调试信息</strong><p class="hint" id="runtime-status"></p><p id="last-cdp-update"></p><p id="state-persisted-at"></p></fieldset>
+  <p class="hint">会话累计值表示整个历史相当于完整额度窗口的比例，不代表当前窗口已用额度。</p><p class="hint" id="widget-version"></p></div></section>`;
   const side = document.createElement("span");
   side.id = "codex-usage-sidebar-widget";
   side.style.cssText = "position:fixed;z-index:900;pointer-events:none;display:block";
@@ -150,7 +155,8 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
     $("last").textContent=active?`本轮 ${activePair(active.quotaEstimate)}`:`上轮 ${pair(last?.quotaEstimate)}`;
     $("remaining").textContent=`剩余：5 小时 ${remaining(limits.primary)} · 每周 ${remaining(limits.secondary)}`;
     const partialHistory=session?.quotaEstimate?.primary?.partialHistory;
-    $("session").textContent=`会话历史累计（完整窗口等值）：5 小时 ${quotaText(session?.quotaEstimate?.primary)} · 每周 ${quotaText(session?.quotaEstimate?.secondary)}${partialHistory?" · 仅含已记录轮次，历史 token 未全部归属，实际累计可能更高":""}`;
+    $("session-values").textContent=`：5 小时 ${quotaText(session?.quotaEstimate?.primary)} · 每周 ${quotaText(session?.quotaEstimate?.secondary)}`;
+    $("session-partial-mark").hidden=!partialHistory;
     $("previous").textContent=active?`本轮已消耗：5 小时 ${activeQuotaText(active.quotaEstimate?.primary)} · 每周 ${activeQuotaText(active.quotaEstimate?.secondary)}`:`上一轮消耗：5 小时 ${quotaText(last?.quotaEstimate?.primary)} · 每周 ${quotaText(last?.quotaEstimate?.secondary)}`;
     const selected=detailScope==="session"?session:(active||last);
     const summary=selected?.usageSummary;
@@ -176,7 +182,12 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
     $("evidence-body").replaceChildren(...rows.map(([name,value])=>{const row=document.createElement("tr");for(const text of [name,`${value.primary?.samples||0} / ${Number(value.primary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.primary?.percentPerCostUnit),`${value.secondary?.samples||0} / ${Number(value.secondary?.effectiveSamples||0).toFixed(2)}`,coefficient(value.secondary?.percentPerCostUnit)]){const cell=document.createElement("td");cell.textContent=text;row.appendChild(cell);}return row;}));
     $("sidebar").checked=current.settings?.sidebar===true;
     $("turns").checked=current.settings?.turnBadges===true;
+    const displayTime=(value)=>value && Number.isFinite(new Date(value).getTime())?new Date(value).toLocaleString():"--";
+    $("last-cdp-update").textContent=`上次收到 CDP 更新：${displayTime(lastCdpUpdateAt)}`;
+    $("state-persisted-at").textContent=`state.json 最近成功写入（后端报告）：${displayTime(current.persistence?.lastPersistedAt)}`;
     $("widget-version").textContent=`浮窗版本 ${displayVersion}`;
+    $("usage-view").hidden=settingsPage;
+    $("settings-view").hidden=!settingsPage;
     root.querySelector(".panel").hidden=!open;
     root.querySelector(".widget").setAttribute("aria-expanded",String(open));
     side.shadowRoot.querySelector(".badge").textContent=`5h余 ${remaining(limits.primary)} · 周余 ${remaining(limits.secondary)}`;
@@ -269,11 +280,13 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
   observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:["class","aria-label","placeholder","data-placeholder","data-conversation-id","data-thread-id"]});
   const fallback=setInterval(()=>{if(!document.hidden)ensure();},20_000);
   const onScroll=()=>{if(!document.hidden)schedule();};
-  const onPointer=(event)=>{if(open&&!event.composedPath().includes(host)){open=false;schedule();}};
+  const onPointer=(event)=>{if(open&&!event.composedPath().includes(host)){open=false;settingsPage=false;schedule();}};
   addEventListener("resize",schedule,{passive:true});document.addEventListener("scroll",onScroll,{capture:true,passive:true});document.addEventListener("visibilitychange",schedule);document.addEventListener("pointerdown",onPointer);
-  root.querySelector(".widget").addEventListener("click",()=>{open=!open;schedule();});
+  root.querySelector(".widget").addEventListener("click",()=>{open=!open;if(!open)settingsPage=false;schedule();});
   $("scope-last").addEventListener("click",()=>{detailScope="last";schedule();});
   $("scope-session").addEventListener("click",()=>{detailScope="session";schedule();});
+  $("settings-open").addEventListener("click",()=>{settingsPage=true;schedule();});
+  $("settings-back").addEventListener("click",()=>{settingsPage=false;schedule();});
   $("evidence-toggle").addEventListener("click",()=>{evidenceOpen=!evidenceOpen;schedule();});
   $("evidence-clear").addEventListener("click",()=>{
     if (!confirm("清空当前校准证据？会话和 token 记录仍会保留，之后的有效观测区间将重新校准。")) return;
@@ -286,7 +299,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
     try {window.__codexUsageSaveSettings?.(JSON.stringify({action:"updateSettings",settings}));} catch { /* CDP reconnects */ }
     schedule();
   });
-  window.__codexUsageOverlayV2={version:implementationVersion,update(next){current=next||{};schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;delete window.__CODEX_USAGE_WIDGET_SESSION__;}};
+  window.__codexUsageOverlayV2={version:implementationVersion,update(next){current=next||{};lastCdpUpdateAt=Date.now();schedule();},destroy(){clearTimeout(scheduled);clearInterval(fallback);observer.disconnect();sizeObserver.disconnect();removeEventListener("resize",schedule);document.removeEventListener("scroll",onScroll,true);document.removeEventListener("visibilitychange",schedule);document.removeEventListener("pointerdown",onPointer);host.remove();side.remove();for(const item of turnHosts.values())item.remove();delete window.__codexUsageOverlayV2;delete window.__CODEX_USAGE_WIDGET_SESSION__;}};
   ensure();
 }
 

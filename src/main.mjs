@@ -59,6 +59,9 @@ try {
 fs.writeFileSync(connectionPath(), JSON.stringify({ hookPort: options.hookPort, debugPort: options.debugPort }));
 
 const store = new StateStore();
+function widgetState() {
+  return { ...usageView(store.snapshot()), persistence: store.persistenceStatus() };
+}
 const pageSessionIds = new Map();
 const stopRecovery = startTranscriptRecovery({ store, prioritySessionIds: () => new Set(pageSessionIds.values()) });
 const hookServer = startHookServer({ port: options.hookPort, store });
@@ -135,7 +138,7 @@ async function discoverAndInject() {
       try { await client.request("Page.enable"); } catch { /* Some webviews omit Page domain. */ }
       client.addEventListener("notification", (event) => {
         if (event.detail.method === "Page.frameNavigated" && !event.detail.params?.frame?.parentId) {
-          setTimeout(() => void client.evaluate(updateSource(usageView(store.snapshot()))).catch(() => {}), 250);
+          setTimeout(() => void client.evaluate(updateSource(widgetState())).catch(() => {}), 250);
           return;
         }
         if (event.detail.method !== "Runtime.bindingCalled" || event.detail.params?.name !== "__codexUsageSaveSettings") return;
@@ -148,7 +151,7 @@ async function discoverAndInject() {
       });
       client.addEventListener("close", () => clients.delete(target.id));
       clients.set(target.id, client);
-      await client.evaluate(updateSource(usageView(store.snapshot())));
+      await client.evaluate(updateSource(widgetState()));
       await trackPageSession(target.id, client);
       console.log(`Injected usage UI into: ${target.title || target.url || target.id}`);
     } catch (error) {
@@ -161,7 +164,7 @@ async function discoverAndInject() {
 }
 
 async function pushState() {
-  const expression = updateSource(usageView(store.snapshot()));
+  const expression = updateSource(widgetState());
   await Promise.allSettled([...clients.values()].map((client) => client.evaluate(expression)));
 }
 
