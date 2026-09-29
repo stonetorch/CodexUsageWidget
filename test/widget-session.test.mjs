@@ -111,7 +111,7 @@ test("the composer pill flags a likely reset from the 48h probability", () => {
   assert.equal(resetAlert(null), false);
   assert.equal(resetAlert(undefined), false);
   const source = updateSource({ resetProbability: { p24h: 0.81, p48h: 0.65 } });
-  assert.match(source, /<span class="reset-flag" id="reset-flag" hidden>⚡<\/span><span class="gear">⚙<\/span>/);
+  assert.match(source, /<span class="tail"><span class="reset-flag" id="reset-flag" hidden>⚡<\/span><span class="gear">⚙<\/span><\/span>/);
   assert.match(source, /const flagged=alertAt\(reset\?\.p48h\)/);
   assert.match(source, /\$\("reset-flag"\)\.hidden=!flagged/);
   assert.match(source, /48 小时内重置 Codex 额度概率/);
