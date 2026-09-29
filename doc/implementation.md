@@ -13,6 +13,7 @@ App Server ┘                                    ←─ 设置回传（Runtime 
 ```
 
 - 三条链路互为冗余：Hook 最快，转录补录兜底，额度快照来自 App Server。
+- 重置概率来自外部公开接口（`reset-probability.mjs`），只缓存在进程内、不写 `state.json`，随快照一起推送。放进程里有三个原因：浮窗注入在 Codex 渲染进程里，跨域请求会被拦掉；注入代码保持“只渲染快照、不连网”；接口失败时能直接沿用上一次的结果。
 - 只有 `StateStore` 持有状态；浮窗是无状态渲染器，每次收到完整快照。
 - 浮窗到宿主的唯一反向通道是设置（`__codexUsageSaveSettings` binding）。
 
@@ -30,6 +31,7 @@ App Server ┘                                    ←─ 设置回传（Runtime 
 | `transcript.mjs` | 解析会话转录，产出逐轮 token 与额度观测 |
 | `transcript-recovery.mjs` | 定时扫描转录目录，补录缺失轮次与未完成轮次 |
 | `quota-estimator.mjs` | 模型权重、参考成本、额度校准、对外 `usageView` |
+| `reset-probability.mjs` | 读取第三方重置概率接口并校验结构（唯一的对外请求） |
 | `state-store.mjs` | 状态持久化、设置合并、活动轮次、写入失败回滚 |
 | `hook-installer.mjs` / `hook-client.mjs` / `hook-server.mjs` | Stop Hook 的安装、上报与接收 |
 
@@ -40,7 +42,8 @@ App Server ┘                                    ←─ 设置回传（Runtime 
 3. 安装 Stop Hook、写 `connection.json`（供外部脚本读取端口）。
 4. 起 `StateStore`、转录补录、Hook server、App Server，随后读一次额度并每 60 秒刷新。
 5. 每 2 秒重新发现目标并注入；`StateStore` 每次 `changed` 就向所有 client 推送快照。
-6. `SIGINT`/`SIGTERM` 时依次关停补录、定时器、CDP 连接、Hook server、App Server。
+6. 注入开始后取一次重置概率，之后每 10 分钟刷新；取到新值才额外推一次快照（失败或结构异常时保留上一次结果，不推空数据）。
+7. `SIGINT`/`SIGTERM` 时依次关停补录、定时器、CDP 连接、Hook server、App Server。
 
 ## 注入与页面协同
 

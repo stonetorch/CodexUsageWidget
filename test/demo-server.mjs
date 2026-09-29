@@ -8,6 +8,7 @@ const state = {
     primary: { usedPercent: 23, windowDurationMins: 300, resetsAt: 1788947564 },
     secondary: { usedPercent: 7, windowDurationMins: 10080, resetsAt: 1789460832 },
   },
+  resetProbability: { checkedAt: new Date().toISOString(), p12h: 0.44, p24h: 0.78, p48h: 0.79, p72h: 0.81 },
   sessions: {
     demo: {
       sessionId: "demo",

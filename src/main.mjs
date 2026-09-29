@@ -7,6 +7,7 @@ import { updateSource } from "./widget-overlay.mjs";
 import { ensureHookInstalled } from "./hook-installer.mjs";
 import { startHookServer } from "./hook-server.mjs";
 import { StateStore } from "./state-store.mjs";
+import { fetchResetProbabilities, RESET_PROBABILITY_REFRESH_MS } from "./reset-probability.mjs";
 import { normalizeRateLimitsResult } from "./transcript.mjs";
 import { startTranscriptRecovery } from "./transcript-recovery.mjs";
 import { usageView } from "./quota-estimator.mjs";
@@ -59,8 +60,9 @@ try {
 fs.writeFileSync(connectionPath(), JSON.stringify({ hookPort: options.hookPort, debugPort: options.debugPort }));
 
 const store = new StateStore();
+let resetProbability = null;
 function widgetState() {
-  return { ...usageView(store.snapshot()), persistence: store.persistenceStatus() };
+  return { ...usageView(store.snapshot()), resetProbability, persistence: store.persistenceStatus() };
 }
 const pageSessionIds = new Map();
 const stopRecovery = startTranscriptRecovery({ store, prioritySessionIds: () => new Set(pageSessionIds.values()) });
@@ -84,6 +86,21 @@ appServer.addEventListener("notification", (event) => {
 });
 await refreshLimits();
 const limitTimer = setInterval(refreshLimits, 60_000);
+
+// 外部公开接口，失败或结构异常时保留上一次的结果，不影响其它链路。
+async function refreshResetProbability() {
+  try {
+    const next = await fetchResetProbabilities();
+    if (!next) {
+      console.warn("Reset probability response carried no usable probabilities");
+      return;
+    }
+    resetProbability = next;
+    await pushState();
+  } catch (error) {
+    console.warn(`Unable to refresh reset probabilities: ${error.message}`);
+  }
+}
 
 const clients = new Map();
 const cleanedTargets = new Set();
@@ -171,12 +188,15 @@ async function pushState() {
 store.addEventListener("changed", () => void pushState());
 await discoverAndInject();
 const discoveryTimer = setInterval(discoverAndInject, 2000);
+void refreshResetProbability();
+const resetProbabilityTimer = setInterval(() => void refreshResetProbability(), RESET_PROBABILITY_REFRESH_MS);
 
 console.log("Codex Usage Overlay is running. Keep this process open; press Ctrl+C to stop.");
 function shutdown() {
   stopRecovery();
   clearInterval(limitTimer);
   clearInterval(discoveryTimer);
+  clearInterval(resetProbabilityTimer);
   for (const client of clients.values()) client.close();
   hookServer.close();
   appServer.close();

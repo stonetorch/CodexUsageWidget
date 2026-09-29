@@ -9,7 +9,7 @@ A Windows overlay that shows your **5-hour / weekly remaining quota** and **per-
 
 ![The quota pill between the Codex composer's bottom buttons, showing 5h left 35%, weekly 35%, last turn ~19.2% / ~3.18%](doc/images/composer-overlay.webp)
 
-Everything stays on your machine: the widget injects itself into the Codex renderer through a local CDP port and never sends data anywhere.
+Usage data stays on your machine: the widget injects itself into the Codex renderer through a local CDP port and uploads nothing. The one external request is the reset-probability forecast — the local Node process reads the public `codex.gussuriworks.com` API every 10 minutes; the widget itself never talks to the network.
 
 ## Features
 
@@ -20,6 +20,7 @@ Everything stays on your machine: the widget injects itself into the Codex rende
 
 - Optional markers: remaining quota in the sidebar and a per-turn badge next to the reply action buttons. Both are off by default and never cover native controls;
 - The estimates & settings page inside the panel exposes the calibration evidence, lets you clear it, and shows runtime status plus the overlay version;
+- The reset-probability forecast page inside the panel shows the chance that Tibo randomly resets Codex quota within 12/24/48/72 hours (public third-party API, refreshed every 10 minutes). At 70% or more within 48 hours, a ⚡ marker appears in the widget just left of the ⚙;
 - Explanatory text is tucked behind a small ⓘ marker; hover or long-press to read it.
 
 ## Getting started
@@ -45,6 +46,7 @@ Both the CDP and hook ports bind to loopback only. For runtime status, `GET http
 | 5-hour / weekly remaining quota | `account/rateLimits/read` from the Codex App Server, refreshed every 60 seconds and immediately on `account/rateLimits/updated` notifications |
 | Per-turn tokens | The local log's `token_usage_record.turn_token_usage`; the legacy format is only diffed when a valid cumulative baseline exists and the counter has not gone backwards |
 | Missing turns | Every 15 seconds the newest local session files are scanned, recovering up to the last 200 completed turns per file and re-parsing older usage records |
+| Reset-probability forecast | The public third-party `codex.gussuriworks.com/api/current` API, refreshed every 10 minutes. It is the project's only outbound request; on failure or an unexpected shape the previous result is kept |
 
 A turn without a baseline is marked unknown, so inherited history is never attributed to the current turn. The session ID of the page you are looking at is scanned first, so its transcript is recovered even when the file is older than 48 hours. Legacy records that were never re-parsed are excluded from quota estimation.
 

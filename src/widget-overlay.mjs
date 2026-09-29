@@ -2,7 +2,7 @@ import { toolbarPlacement, intersects } from "./placement.mjs";
 
 // Keep the user-facing version paired with the injected implementation version.
 // Bump both when a new overlay implementation is released.
-export const WIDGET_IMPLEMENTATION_VERSION = 17;
+export const WIDGET_IMPLEMENTATION_VERSION = 19;
 export const WIDGET_DISPLAY_VERSION = `v${WIDGET_IMPLEMENTATION_VERSION}`;
 
 export function messageMarker(value) {
@@ -31,6 +31,13 @@ export function detectPageSessionId(doc, href) {
   return named && uuid.test(named[1]) ? named[1] : null;
 }
 
+// 48 小时内重置概率达到 70% 时，胶囊浮窗上出现 ⚡ 提示。
+// 阈值写成默认参数：这个函数会被 toString() 序列化进注入表达式，不能引用模块常量。
+export function resetAlert(probability, threshold = 0.7) {
+  const value = Number(probability);
+  return Number.isFinite(value) && value >= threshold;
+}
+
 export function formatQuota(estimate) {
   const value = estimate?.percent;
   if (value == null || !Number.isFinite(value)) {
@@ -40,7 +47,7 @@ export function formatQuota(estimate) {
   return `约 ${value >= 10 ? value.toFixed(1) : value >= 1 ? value.toFixed(2) : value.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}%`;
 }
 
-function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implementationVersion, displayVersion) {
+function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, alertAt, implementationVersion, displayVersion) {
   if (window.__codexUsageOverlayV2) { window.__codexUsageOverlayV2.update(state); return; }
   let current = state || {};
   let lastCdpUpdateAt = Date.now();
@@ -50,6 +57,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
   let detailScope = "last";
   let evidenceOpen = false;
   let settingsPage = false;
+  let resetPage = false;
   let scheduled;
   const turnHosts = new Map();
   const host = document.createElement("span");
@@ -59,18 +67,22 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
   root.innerHTML = `<style>
     :host([hidden]){display:none!important}*{box-sizing:border-box}
     button{cursor:pointer}.widget{display:flex;align-items:center;gap:5px;width:100%;height:28px;max-width:100%;padding:3px 8px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:999px;background:color-mix(in srgb,Canvas 86%,CanvasText 14%);color:CanvasText;font:500 11px/1.2 system-ui,'Segoe UI',sans-serif;white-space:nowrap;overflow:hidden;pointer-events:auto;box-shadow:0 2px 8px #0002}
-    .widget span{overflow:hidden;text-overflow:ellipsis}.widget .gear{margin-left:auto}.widget:focus-visible{outline:2px solid #10a37f}
+    .widget span{overflow:hidden;text-overflow:ellipsis}.widget .gear{margin-left:auto}.widget .reset-flag{flex:none;font-size:12px;line-height:1}.widget:focus-visible{outline:2px solid #10a37f}
     :host([data-narrow=true]) .last{display:none}
     .panel{position:absolute;bottom:calc(100% + 8px);left:var(--panel-left,0px);width:380px;max-width:calc(100vw - 16px);max-height:78vh;overflow:auto;padding:14px;border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:12px;background:Canvas;color:CanvasText;box-shadow:0 12px 32px #0005;font:12px/1.5 system-ui,'Segoe UI',sans-serif;pointer-events:auto}
     :host([data-panel-below=true]) .panel{top:calc(100% + 8px);bottom:auto}
     .panel[hidden],[hidden]{display:none!important}.panel h2{font-size:14px;margin:0 0 8px}.panel p{margin:6px 0}.mark{margin-left:2px;opacity:.6;cursor:help;font-size:11px}.mark:hover{opacity:1}.panel fieldset{border:0;border-top:1px solid color-mix(in srgb,CanvasText 16%,transparent);padding:8px 0 0;margin:10px 0 0}.panel label{display:flex;align-items:center;gap:6px;margin:6px 0}.panel input[type=number]{width:65px;background:Canvas;color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 35%,transparent);border-radius:4px;padding:2px}.hint{opacity:.7}
     .tabs{display:flex;gap:4px;margin:7px 0}.tabs button,.small{border:1px solid color-mix(in srgb,CanvasText 24%,transparent);border-radius:7px;background:transparent;color:CanvasText;padding:4px 8px;font:inherit}.tabs button[aria-selected=true]{background:color-mix(in srgb,CanvasText 14%,Canvas);font-weight:650}
     .metrics{display:grid;grid-template-columns:1fr 1fr;gap:5px 12px;padding:8px;border-radius:8px;background:color-mix(in srgb,CanvasText 6%,Canvas)}.metric{display:flex;justify-content:space-between;gap:8px}.metric span{opacity:.7}.metric strong{font-variant-numeric:tabular-nums;text-align:right}
-    .page-head,.section-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.page-head h2{margin:0;flex:1;text-align:center}.page-head .small{padding:3px 6px}.page-head::after{content:"";width:45px}.settings-link{display:flex;align-items:center;justify-content:space-between;width:100%;padding:9px 10px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:8px;background:color-mix(in srgb,CanvasText 4%,Canvas);color:CanvasText;font:inherit;text-align:left}.settings-link strong,.settings-link small{display:block}.settings-link small{margin-top:2px;opacity:.7}.settings-link .chevron{font-size:20px;line-height:1;opacity:.65}.evidence{max-height:190px;overflow:auto;margin-top:6px}.evidence table{width:100%;border-collapse:collapse;font-size:10px;font-variant-numeric:tabular-nums}.evidence th,.evidence td{padding:3px 4px;border-bottom:1px solid color-mix(in srgb,CanvasText 10%,transparent);text-align:right}.evidence th:first-child,.evidence td:first-child{text-align:left;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.danger{margin-top:8px;border-color:#d55!important;color:#d55!important}
-  </style><button class="widget" aria-expanded="false"><span id="five">5h --</span><span>·</span><span id="week">周 --</span><span>·</span><span class="last" id="last">上轮 --</span><span class="gear">⚙</span></button>
+    .page-head,.section-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.page-head h2{margin:0;flex:1;text-align:center}.page-head .small{padding:3px 6px}.page-head::after{content:"";width:45px}.settings-link{display:flex;align-items:center;justify-content:space-between;width:100%;padding:9px 10px;border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:8px;background:color-mix(in srgb,CanvasText 4%,Canvas);color:CanvasText;font:inherit;text-align:left}.settings-link strong,.settings-link small{display:block}.settings-link small{margin-top:2px;opacity:.7}.settings-link .chevron{font-size:20px;line-height:1;opacity:.65}.settings-link+.settings-link{margin-top:6px}.evidence{max-height:190px;overflow:auto;margin-top:6px}.evidence table{width:100%;border-collapse:collapse;font-size:10px;font-variant-numeric:tabular-nums}.evidence th,.evidence td{padding:3px 4px;border-bottom:1px solid color-mix(in srgb,CanvasText 10%,transparent);text-align:right}.evidence th:first-child,.evidence td:first-child{text-align:left;max-width:95px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.danger{margin-top:8px;border-color:#d55!important;color:#d55!important}
+  </style><button class="widget" aria-expanded="false"><span id="five">5h --</span><span>·</span><span id="week">周 --</span><span>·</span><span class="last" id="last">上轮 --</span><span class="reset-flag" id="reset-flag" hidden>⚡</span><span class="gear">⚙</span></button>
   <section class="panel" hidden><div id="usage-view"><h2>用量</h2><p id="remaining"></p><p id="session"><span>会话历史累计</span><span class="mark" id="session-window-mark" aria-label="完整窗口等值说明" title="完整窗口等值：这里显示的是整个会话历史累计相当于多少个完整额度窗口，而不是当前 5 小时或每周窗口已用的额度。">ⓘ</span><span id="session-values"></span><span class="mark" id="session-partial-mark" aria-label="已记录轮次范围说明" title="仅含已记录轮次：部分历史 token 未归属到具体轮次，未计入上述累计且不按固定比例补算，因此实际历史累计可能更高。" hidden>ⓘ</span></p><p id="previous"></p>
   <fieldset><div class="tabs" role="tablist"><button id="scope-last" type="button" role="tab">上一轮</button><button id="scope-session" type="button" role="tab">当前会话</button></div><div class="metrics"><div class="metric"><span>总 token</span><strong id="metric-total">--</strong></div><div class="metric"><span>输出 token</span><strong id="metric-output">--</strong></div><div class="metric"><span>未缓存输入</span><strong id="metric-uncached">--</strong></div><div class="metric"><span>缓存输入</span><strong id="metric-cached">--</strong></div><div class="metric"><span>缓存写入</span><strong id="metric-write">--</strong></div><div class="metric"><span>缓存命中率</span><strong id="metric-hit">--</strong></div><div class="metric"><span>参考费用</span><strong id="metric-cost">--</strong></div><div class="metric"><span>模型</span><strong id="metric-model">--</strong></div></div><p class="hint" id="metric-note"></p></fieldset>
-  <fieldset><button class="settings-link" id="settings-open" type="button"><span><strong>估算与设置</strong><small>估算证据、显示选项</small></span><span class="chevron" aria-hidden="true">›</span></button></fieldset></div>
+  <fieldset><button class="settings-link" id="settings-open" type="button"><span><strong>估算与设置</strong><small>估算证据、显示选项</small></span><span class="chevron" aria-hidden="true">›</span></button><button class="settings-link" id="reset-open" type="button"><span><strong>重置概率预测</strong><small>Tibo 重置 Codex 额度的概率</small></span><span class="chevron" aria-hidden="true">›</span></button></fieldset></div>
+  <div id="reset-view" hidden><div class="page-head"><button class="small" id="reset-back" type="button">← 返回</button><h2>重置概率预测</h2></div>
+  <p class="hint">Tibo 随机重置 Codex 额度的概率预测，数据来自 codex.gussuriworks.com 的公开接口。</p>
+  <div class="metrics"><div class="metric"><span>12 小时内</span><strong id="reset-p12h">--</strong></div><div class="metric"><span>24 小时内</span><strong id="reset-p24h">--</strong></div><div class="metric"><span>48 小时内</span><strong id="reset-p48h">--</strong></div><div class="metric"><span>72 小时内</span><strong id="reset-p72h">--</strong></div></div>
+  <p class="hint" id="reset-checked"></p></div>
   <div id="settings-view" hidden><div class="page-head"><button class="small" id="settings-back" type="button">← 返回</button><h2>估算与设置</h2></div>
   <fieldset><div class="section-head"><strong>估算证据</strong><button class="small" id="evidence-toggle" type="button">查看详情</button></div><p id="confidence"></p><div class="evidence" id="evidence-details" hidden><table><thead><tr><th>模型</th><th>5h 组/权重</th><th>5h 系数</th><th>周 组/权重</th><th>周系数</th></tr></thead><tbody id="evidence-body"></tbody></table></div><button class="small danger" id="evidence-clear" type="button">清空用于估算的证据</button></fieldset>
   <fieldset><label><input id="sidebar" type="checkbox">侧栏显示剩余额度</label><label><input id="turns" type="checkbox">回复按钮旁显示本轮消耗</label></fieldset>
@@ -186,8 +198,18 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
     $("last-cdp-update").textContent=`上次收到 CDP 更新：${displayTime(lastCdpUpdateAt)}`;
     $("state-persisted-at").textContent=`state.json 最近成功写入（后端报告）：${displayTime(current.persistence?.lastPersistedAt)}`;
     $("widget-version").textContent=`浮窗版本 ${displayVersion}`;
-    $("usage-view").hidden=settingsPage;
+    const reset=current.resetProbability;
+    $("reset-p12h").textContent=rate(reset?.p12h);
+    $("reset-p24h").textContent=rate(reset?.p24h);
+    $("reset-p48h").textContent=rate(reset?.p48h);
+    $("reset-p72h").textContent=rate(reset?.p72h);
+    $("reset-checked").textContent=reset?`数据检查时间：${displayTime(reset.checkedAt)}。`:"尚未取到预测数据，需要本机能访问 codex.gussuriworks.com。";
+    const flagged=alertAt(reset?.p48h);
+    $("reset-flag").hidden=!flagged;
+    $("reset-flag").title=flagged?`48 小时内重置 Codex 额度概率 ${rate(reset.p48h)}`:"";
+    $("usage-view").hidden=settingsPage||resetPage;
     $("settings-view").hidden=!settingsPage;
+    $("reset-view").hidden=!resetPage;
     root.querySelector(".panel").hidden=!open;
     root.querySelector(".widget").setAttribute("aria-expanded",String(open));
     side.shadowRoot.querySelector(".badge").textContent=`5h余 ${remaining(limits.primary)} · 周余 ${remaining(limits.secondary)}`;
@@ -280,13 +302,15 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
   observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:["class","aria-label","placeholder","data-placeholder","data-conversation-id","data-thread-id"]});
   const fallback=setInterval(()=>{if(!document.hidden)ensure();},20_000);
   const onScroll=()=>{if(!document.hidden)schedule();};
-  const onPointer=(event)=>{if(open&&!event.composedPath().includes(host)){open=false;settingsPage=false;schedule();}};
+  const onPointer=(event)=>{if(open&&!event.composedPath().includes(host)){open=false;settingsPage=false;resetPage=false;schedule();}};
   addEventListener("resize",schedule,{passive:true});document.addEventListener("scroll",onScroll,{capture:true,passive:true});document.addEventListener("visibilitychange",schedule);document.addEventListener("pointerdown",onPointer);
-  root.querySelector(".widget").addEventListener("click",()=>{open=!open;if(!open)settingsPage=false;schedule();});
+  root.querySelector(".widget").addEventListener("click",()=>{open=!open;if(!open){settingsPage=false;resetPage=false;}schedule();});
   $("scope-last").addEventListener("click",()=>{detailScope="last";schedule();});
   $("scope-session").addEventListener("click",()=>{detailScope="session";schedule();});
-  $("settings-open").addEventListener("click",()=>{settingsPage=true;schedule();});
+  $("settings-open").addEventListener("click",()=>{settingsPage=true;resetPage=false;schedule();});
   $("settings-back").addEventListener("click",()=>{settingsPage=false;schedule();});
+  $("reset-open").addEventListener("click",()=>{resetPage=true;settingsPage=false;schedule();});
+  $("reset-back").addEventListener("click",()=>{resetPage=false;schedule();});
   $("evidence-toggle").addEventListener("click",()=>{evidenceOpen=!evidenceOpen;schedule();});
   $("evidence-clear").addEventListener("click",()=>{
     if (!confirm("清空当前校准证据？会话和 token 记录仍会保留，之后的有效观测区间将重新校准。")) return;
@@ -303,7 +327,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
   ensure();
 }
 
-const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()}),(${formatQuota.toString()}),(${detectPageSessionId.toString()})`;
+const helpers=`(${toolbarPlacement.toString()}),(${intersects.toString()}),(${messageMarker.toString()}),(${formatQuota.toString()}),(${detectPageSessionId.toString()}),(${resetAlert.toString()})`;
 const serialize=(state)=>JSON.stringify(state).replaceAll("<","\\u003c");
 export function injectionSource(state) {return `(${bootstrap.toString()})(${serialize(state)},${helpers},${WIDGET_IMPLEMENTATION_VERSION},${JSON.stringify(WIDGET_DISPLAY_VERSION)})`;}
 export function updateSource(state) {const data=serialize(state);return `window.__codexUsageOverlay?.destroy();if(window.__codexUsageOverlayV2?.version!==${WIDGET_IMPLEMENTATION_VERSION})window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlayV2?window.__codexUsageOverlayV2.update(${data}):(${bootstrap.toString()})(${data},${helpers},${WIDGET_IMPLEMENTATION_VERSION},${JSON.stringify(WIDGET_DISPLAY_VERSION)})`;}

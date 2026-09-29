@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { messageMarker, detectPageSessionId, updateSource, formatQuota, WIDGET_DISPLAY_VERSION, WIDGET_IMPLEMENTATION_VERSION } from "../src/widget-overlay.mjs";
+import { messageMarker, detectPageSessionId, updateSource, formatQuota, resetAlert, WIDGET_DISPLAY_VERSION, WIDGET_IMPLEMENTATION_VERSION } from "../src/widget-overlay.mjs";
 import { isCodexAppTarget } from "../src/cdp-client.mjs";
 
 test("session marker matches rendered Markdown text", () => {
@@ -84,6 +84,37 @@ test("quota display distinguishes missing tokens from missing model calibration"
   assert.equal(formatQuota({ percent: NaN }), "无法估算");
   assert.equal(formatQuota({ percent: 0 }), "约 0%");
   assert.equal(formatQuota({ percent: 6 }), "约 6.00%");
+});
+
+test("reset probability opens its own page from the usage view", () => {
+  const source = updateSource({});
+  const usageMarkup = source.slice(source.indexOf('<div id="usage-view"'), source.indexOf('<div id="settings-view"'));
+  assert.match(usageMarkup, /<button class="settings-link" id="reset-open" type="button">/);
+  assert.match(usageMarkup, /重置概率预测/);
+  assert.match(source, /<div id="reset-view" hidden>/);
+  assert.match(source, /<button class="small" id="reset-back" type="button">← 返回<\/button>/);
+  assert.match(source, /id="reset-p12h"/);
+  assert.match(source, /id="reset-p24h"/);
+  assert.match(source, /id="reset-p48h"/);
+  assert.match(source, /id="reset-p72h"/);
+  assert.match(source, /resetPage=true;settingsPage=false/);
+  assert.match(source, /usage-view"\)\.hidden=settingsPage\|\|resetPage/);
+  assert.match(source, /current\.resetProbability/);
+  assert.match(source, /Tibo 随机重置 Codex 额度的概率预测/);
+});
+
+test("the composer pill flags a likely reset from the 48h probability", () => {
+  assert.equal(resetAlert(0.7), true);
+  assert.equal(resetAlert(0.6999999), false);
+  assert.equal(resetAlert(0.81), true);
+  assert.equal(resetAlert(0), false);
+  assert.equal(resetAlert(null), false);
+  assert.equal(resetAlert(undefined), false);
+  const source = updateSource({ resetProbability: { p24h: 0.81, p48h: 0.65 } });
+  assert.match(source, /<span class="reset-flag" id="reset-flag" hidden>⚡<\/span><span class="gear">⚙<\/span>/);
+  assert.match(source, /const flagged=alertAt\(reset\?\.p48h\)/);
+  assert.match(source, /\$\("reset-flag"\)\.hidden=!flagged/);
+  assert.match(source, /48 小时内重置 Codex 额度概率/);
 });
 
 test("session hints are compact hover markers instead of inline sentences", () => {
