@@ -1,5 +1,8 @@
 # Codex Usage Widget
 
+> [!WARNING]
+> 这个项目是 Vibe Coding 的产物，**没有在代码层面做过审查**。可能存在缺陷、安全漏洞或未预期的行为，请自行阅读源码、评估风险后再使用。
+
 在 Codex Desktop 输入栏里直接显示 **5 小时 / 每周剩余额度** 与 **逐轮 Token 消耗** 的 Windows 浮窗。
 
 **简体中文** | [English](README.en.md)

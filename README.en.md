@@ -1,5 +1,8 @@
 # Codex Usage Widget
 
+> [!WARNING]
+> This project is vibe-coded and has **never been reviewed at the code level**. It may contain defects, security holes, or unexpected behavior — read the source and assess the risk yourself before using it.
+
 A Windows overlay that shows your **5-hour / weekly remaining quota** and **per-turn token usage** right inside the Codex Desktop composer.
 
 [简体中文](README.md) | **English**
