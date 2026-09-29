@@ -250,8 +250,9 @@ export function estimateSessionQuota(session, calibration) {
   const turns = session.turns || [];
   const totalTokens = Number(session.conversationUsage?.total_tokens || 0);
   const recordedTokens = turns.reduce((sum, turn) => sum + Number(turn.usage?.total_tokens || 0), 0);
-  const incomplete = turns.length === 0 || totalTokens > recordedTokens
+  const incomplete = turns.length === 0
     || turns.some((turn) => turn.accountingVersion !== 2 || turn.usage == null);
+  const partialHistory = !incomplete && totalTokens > recordedTokens;
   return Object.fromEntries(WINDOWS.map((window) => {
     const estimates = turns.map((turn) => estimateTurnQuota(turn, calibration, session.model)[window]);
     const missing = incomplete || estimates.some((estimate) => estimate.percent === null);
@@ -260,7 +261,8 @@ export function estimateSessionQuota(session, calibration) {
       source: missing ? "unavailable" : "calibrated",
       reason: missing ? incomplete ? "incomplete-history"
         : estimates.find((estimate) => estimate.percent === null)?.reason || "insufficient-evidence" : null,
-      scope: "conversation-lifetime",
+      scope: partialHistory ? "recorded-turns" : "conversation-lifetime",
+      partialHistory,
     }];
   }));
 }

@@ -46,7 +46,7 @@ export function startHookServer({ port, store, logger = console }) {
   const diagnostics = { savedTurns: 0, lastError: null };
   const server = http.createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
-      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ running: true, ...diagnostics }));
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ running: true, ...diagnostics, persistence: store.persistenceStatus?.() || null }));
       return;
     }
     if (request.method !== "POST" || request.url !== "/hook") {

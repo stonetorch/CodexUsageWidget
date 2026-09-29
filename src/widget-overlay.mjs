@@ -2,7 +2,7 @@ import { toolbarPlacement, intersects } from "./placement.mjs";
 
 // Keep the user-facing version paired with the injected implementation version.
 // Bump both when a new overlay implementation is released.
-export const WIDGET_IMPLEMENTATION_VERSION = 12;
+export const WIDGET_IMPLEMENTATION_VERSION = 13;
 export const WIDGET_DISPLAY_VERSION = `v${WIDGET_IMPLEMENTATION_VERSION}`;
 
 export function messageMarker(value) {
@@ -149,7 +149,8 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
     $("week").textContent=`周余 ${remaining(limits.secondary)}`;
     $("last").textContent=active?`本轮 ${activePair(active.quotaEstimate)}`:`上轮 ${pair(last?.quotaEstimate)}`;
     $("remaining").textContent=`剩余：5 小时 ${remaining(limits.primary)} · 每周 ${remaining(limits.secondary)}`;
-    $("session").textContent=`会话历史累计（完整窗口等值）：5 小时 ${quotaText(session?.quotaEstimate?.primary)} · 每周 ${quotaText(session?.quotaEstimate?.secondary)}`;
+    const partialHistory=session?.quotaEstimate?.primary?.partialHistory;
+    $("session").textContent=`会话历史累计（完整窗口等值）：5 小时 ${quotaText(session?.quotaEstimate?.primary)} · 每周 ${quotaText(session?.quotaEstimate?.secondary)}${partialHistory?" · 仅含已记录轮次，历史 token 未全部归属，实际累计可能更高":""}`;
     $("previous").textContent=active?`本轮已消耗：5 小时 ${activeQuotaText(active.quotaEstimate?.primary)} · 每周 ${activeQuotaText(active.quotaEstimate?.secondary)}`:`上一轮消耗：5 小时 ${quotaText(last?.quotaEstimate?.primary)} · 每周 ${quotaText(last?.quotaEstimate?.secondary)}`;
     const selected=detailScope==="session"?session:(active||last);
     const summary=selected?.usageSummary;
@@ -164,7 +165,7 @@ function bootstrap(state, place, overlaps, makeMarker, quotaText, pageId, implem
     $("metric-hit").textContent=rate(summary?.cacheHitRate);
     $("metric-cost").textContent=money(summary?.referenceCost);
     $("metric-model").textContent=summary?.model||"--";
-    $("metric-note").textContent=`参考费用按 API token 价格加权${summary?.approximate?"，历史轮次不完整，参考费用和额度累计无法估算":""}；它用于相对估算，不是 ChatGPT 账单。`;
+    $("metric-note").textContent=`参考费用按 API token 价格加权${summary?.approximate?partialHistory?"，历史轮次不完整，额度累计仅含已记录轮次，参考费用无法估算":"，历史轮次不完整，参考费用和额度累计无法估算":""}；它用于相对估算，不是 ChatGPT 账单。`;
     const model=String(last?.model||session?.model||"unknown").toLowerCase();
     const modelCalibration=current.calibration?.models?.[model];
     const evidenceText=(window,key)=>{const own=modelCalibration?.[key];return `${window}：全局 ${current.calibration?.[key]?.samples||0} 个模型/重置周期组（当前模型 ${own?.samples||0} 组，有效权重 ${Number(own?.effectiveSamples||0).toFixed(2)}）`;};

@@ -30,6 +30,18 @@ try {
   assert.equal(session.conversationUsage.total_tokens, 200);
   assert.deepEqual(session.turns.map(t => t.turnId), ['old', 'new']);
   assert.equal(new StateStore(file).snapshot().sessions.s.turns[0].accountingVersion, 2);
+  assert.equal(reopened.persistenceStatus().error, null);
+  assert.equal(reopened.persistenceStatus().lastPersistedAt, reopened.snapshot().updatedAt);
+
+  const failed = new StateStore(directory);
+  assert.throws(() => failed.setLimits({ primary: null }), { code: "EISDIR" });
+  assert.equal(failed.persistenceStatus().error, "EISDIR");
+  assert.equal(failed.persistenceStatus().lastPersistedAt, null);
+  assert.equal(failed.snapshot().limits, null);
+  failed.setActiveTurn("s", { turnId: "unwritten" });
+  assert.throws(() => failed.recordTurn({ session_id: "s", turn_id: "unwritten" }, metrics("2026-09-28T13:00:00Z", 300)), { code: "EISDIR" });
+  assert.equal(failed.snapshot().sessions.s, undefined);
+  assert.equal(failed.snapshot().activeTurns.s.turnId, "unwritten");
 
 } finally {
   fs.rmSync(directory, { recursive: true, force: true });

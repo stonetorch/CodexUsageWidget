@@ -64,3 +64,8 @@ test("quota display distinguishes missing tokens from missing model calibration"
   assert.equal(formatQuota({ percent: 0 }), "约 0%");
   assert.equal(formatQuota({ percent: 6 }), "约 6.00%");
 });
+
+test("partial session history is labeled beside its displayed estimate", () => {
+  const source = updateSource({});
+  assert.match(source, /仅含已记录轮次，历史 token 未全部归属，实际累计可能更高/);
+});

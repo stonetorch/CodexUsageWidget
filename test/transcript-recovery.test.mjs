@@ -101,3 +101,70 @@ test("known session rollout is checked even when outside the newest 200 generic 
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("open page session is recovered even when its transcript is older than 48 hours", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cuo-old-page-test-"));
+  try {
+    const root = path.join(directory, "sessions");
+    fs.mkdirSync(root);
+    const id = "01a0e8a5-14a0-7813-87fc-f0457e51d052";
+    const file = path.join(root, `rollout-${id}.jsonl`);
+    fs.writeFileSync(file, [
+      { type: "session_meta", payload: { id } },
+      { type: "turn_context", payload: { turn_id: "old-turn", model: "gpt-6-sol" } },
+      { type: "token_usage_record", payload: { turn_id: "old-turn", turn_token_usage: { total_tokens: 42 } } },
+      { type: "event_msg", payload: { type: "task_complete" } },
+      { type: "turn_context", payload: { turn_id: "newer-active", model: "gpt-6-sol" } },
+      { type: "token_usage_record", payload: { turn_id: "newer-active", turn_token_usage: { total_tokens: 3 } } },
+    ].map(JSON.stringify).join("\n"));
+    const child = path.join(root, `rollout-${id}_01a0e89f-96cc-7fa2-879e-b374e84c3dc2.jsonl`);
+    fs.writeFileSync(child, [
+      { type: "session_meta", payload: { id } },
+      { type: "turn_context", payload: { turn_id: "child-turn", model: "gpt-6-sol" } },
+      { type: "token_usage_record", payload: { turn_id: "child-turn", turn_token_usage: { total_tokens: 12 } } },
+      { type: "event_msg", payload: { type: "task_complete" } },
+      { type: "turn_context", payload: { turn_id: "older-active", model: "gpt-6-sol" } },
+      { type: "token_usage_record", payload: { turn_id: "older-active", turn_token_usage: { total_tokens: 2 } } },
+    ].map(JSON.stringify).join("\n"));
+    const old = new Date(Date.now() - 72 * 60 * 60 * 1000);
+    const older = new Date(Date.now() - 73 * 60 * 60 * 1000);
+    fs.utimesSync(file, old, old);
+    fs.utimesSync(child, older, older);
+    const store = new StateStore(path.join(directory, "state.json"));
+    assert.equal(recoverRecentTranscripts({ root, store }), 0);
+    assert.equal(recoverRecentTranscripts({ root, store, prioritySessionIds: new Set([id]) }), 2);
+    assert.deepEqual(store.snapshot().sessions[id].turns.map((turn) => turn.turnId).sort(), ["child-turn", "old-turn"]);
+    assert.equal(store.snapshot().activeTurns[id].turnId, "newer-active");
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("failed state write leaves a completed turn eligible for recovery retry", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "cuo-recovery-retry-test-"));
+  try {
+    const root = path.join(directory, "sessions");
+    fs.mkdirSync(root);
+    const id = "retry-session";
+    fs.writeFileSync(path.join(root, `rollout-${id}.jsonl`), [
+      { type: "session_meta", payload: { id } },
+      { type: "turn_context", payload: { turn_id: "turn-1", model: "gpt-6-sol" } },
+      { type: "token_usage_record", payload: { turn_id: "turn-1", turn_token_usage: { total_tokens: 42 } } },
+      { type: "event_msg", payload: { type: "task_complete" } },
+    ].map(JSON.stringify).join("\n"));
+    const store = new StateStore(directory);
+    const seenFiles = new Map();
+    const warnings = [];
+    const logger = { warn: (message) => warnings.push(message) };
+    assert.equal(recoverRecentTranscripts({ root, store, seenFiles, logger }), 0);
+    assert.equal(store.snapshot().sessions[id], undefined);
+    assert.equal(store.persistenceStatus().error, "EISDIR");
+    assert.equal(warnings.length, 1);
+    store.filePath = path.join(directory, "state.json");
+    assert.equal(recoverRecentTranscripts({ root, store, seenFiles, logger }), 1);
+    assert.equal(new StateStore(store.filePath).snapshot().sessions[id].turns.length, 1);
+    assert.equal(store.persistenceStatus().error, null);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -28,6 +28,9 @@ test("Stop hook acknowledges only after a turn has been saved", async () => {
     assert.equal(response.status, 200);
     assert.equal((await response.json()).saved, true);
     assert.equal(store.snapshot().sessions["session-1"].turns.length, 1);
+    const health = await (await fetch(`http://127.0.0.1:${server.address().port}/health`)).json();
+    assert.equal(health.persistence.error, null);
+    assert.equal(health.persistence.lastPersistedAt, store.snapshot().updatedAt);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     fs.rmSync(directory, { recursive: true, force: true });

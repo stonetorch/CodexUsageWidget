@@ -59,7 +59,8 @@ try {
 fs.writeFileSync(connectionPath(), JSON.stringify({ hookPort: options.hookPort, debugPort: options.debugPort }));
 
 const store = new StateStore();
-const stopRecovery = startTranscriptRecovery({ store });
+const pageSessionIds = new Map();
+const stopRecovery = startTranscriptRecovery({ store, prioritySessionIds: () => new Set(pageSessionIds.values()) });
 const hookServer = startHookServer({ port: options.hookPort, store });
 const appServer = new AppServerClient({ cwd: process.cwd() });
 await appServer.start();
@@ -83,6 +84,15 @@ const limitTimer = setInterval(refreshLimits, 60_000);
 
 const clients = new Map();
 const cleanedTargets = new Set();
+async function trackPageSession(id, client) {
+  try {
+    const result = await client.evaluate("window.__CODEX_USAGE_WIDGET_SESSION__?.detectedSessionId || null");
+    const sessionId = result.result?.value;
+    if (typeof sessionId === "string" && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(sessionId)) {
+      pageSessionIds.set(id, sessionId);
+    } else pageSessionIds.delete(id);
+  } catch { pageSessionIds.delete(id); }
+}
 async function removeOverlay(target) {
   const client = new CdpClient(target.webSocketDebuggerUrl);
   try {
@@ -101,6 +111,7 @@ async function discoverAndInject() {
       if (target) try { await client.evaluate("window.__codexUsageOverlayV2?.destroy();window.__codexUsageOverlay?.destroy()"); } catch { /* Renderer may have navigated. */ }
       client.close();
       clients.delete(id);
+      pageSessionIds.delete(id);
     }
   }
   for (const target of currentTargets) {
@@ -111,7 +122,10 @@ async function discoverAndInject() {
       continue;
     }
     cleanedTargets.delete(target.id);
-    if (clients.has(target.id)) continue;
+    if (clients.has(target.id)) {
+      await trackPageSession(target.id, clients.get(target.id));
+      continue;
+    }
     try {
       const client = new CdpClient(target.webSocketDebuggerUrl);
       await client.connect();
@@ -135,10 +149,12 @@ async function discoverAndInject() {
       client.addEventListener("close", () => clients.delete(target.id));
       clients.set(target.id, client);
       await client.evaluate(updateSource(usageView(store.snapshot())));
+      await trackPageSession(target.id, client);
       console.log(`Injected usage UI into: ${target.title || target.url || target.id}`);
     } catch (error) {
       clients.get(target.id)?.close();
       clients.delete(target.id);
+      pageSessionIds.delete(target.id);
       console.warn(`Could not inject target ${target.id}: ${error.message}`);
     }
   }

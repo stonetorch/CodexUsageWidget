@@ -132,13 +132,14 @@ test("recent reset groups outweigh old groups without discarding their zero incr
   assert.equal(calibration({ s: session([old]) }).models[old.model].primary.percentPerCostUnit, null);
 });
 
-test("missing history is unavailable instead of fabricated as 80 percent cached input", () => {
+test("unattributed history shows the recorded turns' estimate as partial", () => {
   const s = session([turn()]); s.conversationUsage.total_tokens += 10000000;
   const v = usageView({ sessions: { s } }, { now: NOW }).sessions.s;
-  assert.equal(v.quotaEstimate.primary.percent, null);
-  assert.equal(v.quotaEstimate.primary.reason, 'incomplete-history');
+  assert.ok(Math.abs(v.quotaEstimate.primary.percent - 2) < 1e-9);
+  assert.equal(v.quotaEstimate.primary.reason, null);
+  assert.equal(v.quotaEstimate.primary.partialHistory, true);
   assert.equal(v.usageSummary.referenceCost, null);
-  assert.equal(v.quotaEstimate.primary.scope, 'conversation-lifetime');
+  assert.equal(v.quotaEstimate.primary.scope, 'recorded-turns');
 });
 
 test("legacy and unknown turn usage is never treated as zero or trusted cost", () => {

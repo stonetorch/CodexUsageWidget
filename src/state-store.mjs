@@ -15,7 +15,14 @@ export class StateStore extends EventTarget {
     super();
     this.filePath = filePath;
     this.state = this.#read();
+    this.persistedState = structuredClone(this.state);
     this.activeTurns = new Map();
+    this.lastPersistedAt = this.state.updatedAt;
+    this.persistenceError = null;
+  }
+
+  persistenceStatus() {
+    return { lastPersistedAt: this.lastPersistedAt, error: this.persistenceError };
   }
 
   snapshot() {
@@ -68,7 +75,8 @@ export class StateStore extends EventTarget {
     const sessionId = event.session_id || event.sessionId;
     const turnId = event.turn_id || event.turnId;
     if (!sessionId || !turnId || !metrics) return;
-    if (this.activeTurns.get(sessionId)?.turnId === turnId) this.activeTurns.delete(sessionId);
+    const previousActiveTurn = this.activeTurns.get(sessionId);
+    if (previousActiveTurn?.turnId === turnId) this.activeTurns.delete(sessionId);
     const session = this.state.sessions[sessionId] || {
       sessionId,
       cwd: event.cwd || null,
@@ -111,7 +119,11 @@ export class StateStore extends EventTarget {
       .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)))
       .slice(0, 100);
     this.state.sessions = Object.fromEntries(newest.map((entry) => [entry.sessionId, entry]));
-    this.#commit();
+    try { this.#commit(); }
+    catch (error) {
+      if (previousActiveTurn?.turnId === turnId) this.activeTurns.set(sessionId, previousActiveTurn);
+      throw error;
+    }
   }
 
   #read() {
@@ -133,9 +145,18 @@ export class StateStore extends EventTarget {
   }
 
   #commit() {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-    this.state.updatedAt = new Date().toISOString();
-    fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2));
+    try {
+      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      this.state.updatedAt = new Date().toISOString();
+      fs.writeFileSync(this.filePath, JSON.stringify(this.state, null, 2));
+      this.persistedState = structuredClone(this.state);
+      this.lastPersistedAt = this.state.updatedAt;
+      this.persistenceError = null;
+    } catch (error) {
+      this.state = structuredClone(this.persistedState);
+      this.persistenceError = error?.code || error?.name || "write-error";
+      throw error;
+    }
     this.dispatchEvent(new Event("changed"));
   }
 }
