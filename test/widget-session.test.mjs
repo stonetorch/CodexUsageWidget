@@ -55,6 +55,29 @@ test("page session ID is read without state and ignores unrelated URL UUIDs", ()
   assert.equal(detectPageSessionId({ querySelectorAll: () => [] }, "codex-sandbox://host/#initId=db3ac564-dd00-4339-ab0d-dac0f791aba6"), null);
 });
 
+test("page ID fallback ignores hidden conversations and preserves original URL priority", () => {
+  const a = "01a0e8a5-14a0-7813-87fc-f0457e51d052";
+  const b = "01a0f184-7253-74d3-bfa0-e5c2212c67b1";
+  const element = (id, visible, visibility = "visible") => ({
+    getAttribute: () => id,
+    getBoundingClientRect: () => ({ width: visible ? 700 : 0, height: visible ? 32 : 0 }),
+    visibility,
+  });
+  let elements = [element(a, false), element(b, true), element(b, true)];
+  const doc = {
+    querySelectorAll: (selector) => selector === "[data-above-composer-conversation-id]" ? elements : [],
+    defaultView: { getComputedStyle: (item) => ({ visibility: item.visibility }) },
+  };
+  assert.equal(detectPageSessionId(doc, "app://-/index.html"), b);
+  assert.equal(detectPageSessionId(doc, `app://-/thread/${a}`), a);
+  elements = [element(a, true), element(b, true)];
+  assert.equal(detectPageSessionId(doc, "app://-/index.html"), null);
+  elements = [element(a, false), element(b, true, "hidden")];
+  assert.equal(detectPageSessionId(doc, "app://-/index.html"), null);
+  elements = [element(a, false)];
+  assert.equal(detectPageSessionId(doc, "app://-/index.html"), a);
+});
+
 test("overlay targets Codex app pages rather than embedded webviews", () => {
   assert.equal(isCodexAppTarget({ type: "page", url: "app://-/index.html" }), true);
   assert.equal(isCodexAppTarget({ type: "page", url: "app://-/detached-window.html" }), true);

@@ -2,7 +2,7 @@ import { toolbarPlacement, intersects } from "./placement.mjs";
 
 // Keep the user-facing version paired with the injected implementation version.
 // Bump both when a new overlay implementation is released.
-export const WIDGET_IMPLEMENTATION_VERSION = 20;
+export const WIDGET_IMPLEMENTATION_VERSION = 21;
 export const WIDGET_DISPLAY_VERSION = `v${WIDGET_IMPLEMENTATION_VERSION}`;
 
 export function messageMarker(value) {
@@ -28,7 +28,19 @@ export function detectPageSessionId(doc, href) {
     if (ids.length === 1) return ids[0];
   }
   const named = String(href || "").match(/(?:session|conversation|thread)(?:[_-]?id)?[=/:]([0-9a-f-]{36})(?![0-9a-f-])/i);
-  return named && uuid.test(named[1]) ? named[1] : null;
+  if (named && uuid.test(named[1])) return named[1];
+  // 兜底逻辑：仅在原有 DOM 唯一 ID 和 URL 提取均失效时，排除后台隐藏对话。
+  // 页面可能保留多个对话的 DOM；只接受可见元素中唯一的有效会话 ID，避免误选。
+  for (const name of ["data-above-composer-conversation-id", "data-response-annotation-conversation", "data-conversation-id", "data-thread-id", "data-session-id"]) {
+    const ids = [...new Set([...doc.querySelectorAll(`[${name}]`)].filter((element) => {
+      const rect = element.getBoundingClientRect?.();
+      const style = doc.defaultView?.getComputedStyle(element);
+      return rect?.width > 0 && rect.height > 0
+        && style?.visibility !== "hidden" && style?.visibility !== "collapse";
+    }).map((element) => element.getAttribute(name)).filter((value) => uuid.test(value || "")))];
+    if (ids.length === 1) return ids[0];
+  }
+  return null;
 }
 
 // 48 小时内重置概率达到 70% 时，胶囊浮窗上出现 ⚡ 提示。
