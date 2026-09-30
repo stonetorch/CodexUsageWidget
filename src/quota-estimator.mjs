@@ -2,6 +2,7 @@
 // ChatGPT/Codex quota accounting is separate; observed quota deltas calibrate the mapping.
 export const MODEL_WEIGHTS = Object.freeze({
   "gpt-6-astra": { input: 5, cached: 0.5, cacheWrite: 6.25, output: 25 },
+  "gpt-6.1-sol": { input: 2, cached: 0.1, cacheWrite: 2.5, output: 10 },
   "gpt-6-sol": { input: 1, cached: 0.1, cacheWrite: 1.25, output: 5 },
   "gpt-6-luna": { input: 0.1, cached: 0.01, cacheWrite: 0.125, output: 0.5 },
   "gpt-5.6-sol": { input: 4, cached: 0.4, cacheWrite: 5, output: 20 },
