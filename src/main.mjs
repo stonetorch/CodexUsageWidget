@@ -34,7 +34,7 @@ try {
   targets = await listCdpTargets(options.debugPort);
 } catch {
   if (options.attach) {
-    throw new Error(`No Codex debugging endpoint found on 127.0.0.1:${options.debugPort}`);
+    throw new Error(`No Codex debugging endpoint found on 127.0.0.1:${options.debugPort} or [::1]:${options.debugPort}`);
   }
   if (appWasRunning) {
     launchChatGpt();

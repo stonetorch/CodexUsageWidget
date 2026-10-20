@@ -42,6 +42,9 @@ internal static class Program
             start.StandardOutputEncoding = System.Text.Encoding.UTF8;
             start.StandardErrorEncoding = System.Text.Encoding.UTF8;
             start.RedirectStandardInput = hook;
+            // Prepare logging before spawning Node; a locked log must not leave an
+            // orphaned runtime with redirected pipes that nobody reads.
+            using var log = hook ? TextWriter.Null : LauncherLog.Open(Path.GetDirectoryName(root)!);
             using var child = Process.Start(start) ?? throw new InvalidOperationException("Could not start bundled Node runtime");
             if (hook)
             {
@@ -55,8 +58,6 @@ internal static class Program
 
             // The writer has to stay alive until WaitForExit returns: the asynchronous readers keep
             // raising events after the child exits, and writing to a disposed writer crashes the launcher.
-            var logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexUsageOverlay", "launcher.log");
-            using var log = new StreamWriter(logPath, append: true) { AutoFlush = true };
             log.WriteLine($"[{DateTimeOffset.Now:O}] Started PID {child.Id}");
             child.OutputDataReceived += (_, eventArgs) => { if (eventArgs.Data != null) lock (log) log.WriteLine(eventArgs.Data); };
             child.ErrorDataReceived += (_, eventArgs) => { if (eventArgs.Data != null) lock (log) log.WriteLine(eventArgs.Data); };

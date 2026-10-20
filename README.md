@@ -61,6 +61,8 @@ CDP 与 Hook 端口都只监听本机回环地址。后台可访问 `GET http://
 ## 排查
 
 - 浮窗没出现：确认启动前没有“已运行且未开 CDP 端口”的 Codex（见上面的表），并检查 `%LOCALAPPDATA%\CodexUsageOverlay\launcher.log`；`GET /health` 可以看数据链路是否在写入。
+- 新版 Codex 可能只在 IPv6 回环地址 `[::1]:9237` 开放 CDP。控件会先连接 `127.0.0.1`，失败后尝试 `[::1]`；仅 IPv4 地址连接失败不代表 Codex 未开启调试。
+- `launcher.log` 长期不更新：检查同目录的 `launcher-error.log`。若提示日志被其他进程占用，旧启动器会在开始注入前退出；修复后的启动器会自动改用 `launcher-<进程号>-<唯一标识>.log`，记录本次启动，日志不可写也不会阻止启动。
 - 想确认浮窗是否被定位隐藏：在 DevTools 里看 `window.__CODEX_USAGE_WIDGET_DEBUG__`，`status: "degraded"` 会带上原因（找不到输入栏、空隙不足、与原生按钮冲突）。
 
 ## 卸载

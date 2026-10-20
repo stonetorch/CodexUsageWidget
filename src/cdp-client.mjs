@@ -55,9 +55,21 @@ export class CdpClient extends EventTarget {
 }
 
 export async function listCdpTargets(port) {
-  const response = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
-  if (!response.ok) throw new Error(`CDP target list returned HTTP ${response.status}`);
-  return (await response.json()).filter((target) => target.webSocketDebuggerUrl && ["page", "webview"].includes(target.type));
+  const errors = [];
+  // Recent desktop builds may bind only IPv6 loopback even when launched with
+  // --remote-debugging-address=127.0.0.1. Keep discovery on explicit loopback IPs.
+  for (const host of ["127.0.0.1", "[::1]"]) {
+    try {
+      const response = await fetch(`http://${host}:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const targets = await response.json();
+      if (!Array.isArray(targets)) throw new Error("Invalid CDP target list");
+      return targets.filter((target) => target?.webSocketDebuggerUrl && ["page", "webview"].includes(target.type));
+    } catch (error) {
+      errors.push(`${host}:${port}: ${error.message}`);
+    }
+  }
+  throw new Error(`No loopback CDP endpoint available (${errors.join("; ")})`);
 }
 
 export function isCodexAppTarget(target) {
